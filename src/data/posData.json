@@ -1,0 +1,65 @@
+{
+  "company": {
+    "id": "CMP001",
+    "name": "Nexa Retail Backoffice",
+    "currency": "KES",
+    "vatRate": 16,
+    "branches": [
+      {"id": "BR001", "name": "Main Branch", "location": "Nairobi CBD", "salesToday": 284500, "cashVariance": 250},
+      {"id": "BR002", "name": "Westlands", "location": "Westlands Mall", "salesToday": 176800, "cashVariance": -120},
+      {"id": "BR003", "name": "Mombasa", "location": "Nyali", "salesToday": 132400, "cashVariance": 0}
+    ]
+  },
+  "users": [
+    {"id": "USR001", "name": "Amina Otieno", "role": "Admin / Owner", "branch": "All branches", "status": "Active", "lastLogin": "Today 08:14"},
+    {"id": "USR002", "name": "Brian Mwangi", "role": "Manager", "branch": "Main Branch", "status": "Active", "lastLogin": "Today 09:02"},
+    {"id": "USR003", "name": "Mercy Njeri", "role": "Stock Manager", "branch": "Westlands", "status": "Active", "lastLogin": "Yesterday 17:44"},
+    {"id": "USR004", "name": "David Kimani", "role": "Cashier", "branch": "Main Branch", "status": "Active", "lastLogin": "Today 10:31"},
+    {"id": "USR005", "name": "Grace Wambui", "role": "Auditor", "branch": "All branches", "status": "Read-only", "lastLogin": "May 12, 2026"}
+  ],
+  "products": [
+    {"id": "PRD001", "name": "Premium Rice 5kg", "sku": "RCE-5KG", "barcode": "616100001001", "category": "Food Staples", "brand": "Savanna", "cost": 780, "price": 980, "wholesale": 920, "stock": 42, "reorderPoint": 25, "branch": "Main Branch", "tax": "VAT 16%", "status": "In stock"},
+    {"id": "PRD002", "name": "Cooking Oil 2L", "sku": "OIL-2LTR", "barcode": "616100001002", "category": "Food Staples", "brand": "Golden Drop", "cost": 420, "price": 560, "wholesale": 520, "stock": 18, "reorderPoint": 20, "branch": "Main Branch", "tax": "VAT 16%", "status": "Low stock"},
+    {"id": "PRD003", "name": "Fresh Milk 500ml", "sku": "DRY-MLK-500", "barcode": "616100001003", "category": "Dairy", "brand": "Highlands", "cost": 45, "price": 65, "wholesale": 60, "stock": 8, "reorderPoint": 30, "branch": "Westlands", "tax": "Zero rated", "status": "Low stock"},
+    {"id": "PRD004", "name": "Laundry Soap 800g", "sku": "HME-SOP-800", "barcode": "616100001004", "category": "Household", "brand": "Spark", "cost": 165, "price": 235, "wholesale": 215, "stock": 96, "reorderPoint": 35, "branch": "Mombasa", "tax": "VAT 16%", "status": "In stock"},
+    {"id": "PRD005", "name": "Orange Juice 1L", "sku": "BEV-JCE-1L", "barcode": "616100001005", "category": "Beverages", "brand": "Fresh Sip", "cost": 115, "price": 180, "wholesale": 160, "stock": 0, "reorderPoint": 18, "branch": "Main Branch", "tax": "VAT 16%", "status": "Out of stock"}
+  ],
+  "sales": [
+    {"id": "SAL001", "cashier": "David Kimani", "branch": "Main Branch", "amount": 48500, "profit": 11800, "payment": "Cash", "time": "10:45"},
+    {"id": "SAL002", "cashier": "Lilian Achieng", "branch": "Westlands", "amount": 39200, "profit": 9200, "payment": "M-Pesa", "time": "11:08"},
+    {"id": "SAL003", "cashier": "David Kimani", "branch": "Main Branch", "amount": 24700, "profit": 6100, "payment": "Card", "time": "11:34"},
+    {"id": "SAL004", "cashier": "Said Ali", "branch": "Mombasa", "amount": 31800, "profit": 7600, "payment": "Cash", "time": "12:16"}
+  ],
+  "purchaseOrders": [
+    {"id": "PO-1048", "supplier": "Metro Wholesale Ltd", "branch": "Main Branch", "amount": 186000, "status": "Pending Approval", "items": 18, "created": "May 13, 2026"},
+    {"id": "PO-1049", "supplier": "Coastal Distributors", "branch": "Mombasa", "amount": 94500, "status": "Approved", "items": 9, "created": "May 12, 2026"},
+    {"id": "PO-1050", "supplier": "Fresh Dairy Kenya", "branch": "Westlands", "amount": 38200, "status": "Partially Received", "items": 4, "created": "May 11, 2026"}
+  ],
+  "suppliers": [
+    {"id": "SUP001", "name": "Metro Wholesale Ltd", "contact": "0722 111 222", "terms": "30 days", "balance": 142000, "status": "Active"},
+    {"id": "SUP002", "name": "Fresh Dairy Kenya", "contact": "0733 220 119", "terms": "14 days", "balance": 38200, "status": "Active"},
+    {"id": "SUP003", "name": "Coastal Distributors", "contact": "0718 440 900", "terms": "Cash on delivery", "balance": 0, "status": "Active"}
+  ],
+  "alerts": [
+    {"id": "ALT001", "type": "Low stock", "message": "Fresh Milk 500ml is below reorder point at Westlands", "severity": "High", "time": "12 min ago"},
+    {"id": "ALT002", "type": "Out of stock", "message": "Orange Juice 1L is unavailable at Main Branch", "severity": "Critical", "time": "25 min ago"},
+    {"id": "ALT003", "type": "Approval", "message": "PO-1048 needs manager approval", "severity": "Medium", "time": "1 hr ago"},
+    {"id": "ALT004", "type": "Cash variance", "message": "Main Branch drawer variance is KES 250", "severity": "Low", "time": "2 hrs ago"}
+  ],
+  "auditLogs": [
+    {"id": "LOG001", "user": "Brian Mwangi", "action": "Approved refund", "target": "Receipt #RC-3921", "branch": "Main Branch", "device": "Chrome / Windows", "time": "Today 11:52"},
+    {"id": "LOG002", "user": "Mercy Njeri", "action": "Adjusted stock", "target": "Fresh Milk 500ml -12", "branch": "Westlands", "device": "Android Tablet", "time": "Today 10:18"},
+    {"id": "LOG003", "user": "Amina Otieno", "action": "Changed price", "target": "Cooking Oil 2L", "branch": "All branches", "device": "Chrome / Windows", "time": "Yesterday 16:23"},
+    {"id": "LOG004", "user": "David Kimani", "action": "Opened shift", "target": "Drawer #MAIN-02", "branch": "Main Branch", "device": "POS Terminal", "time": "Today 08:00"}
+  ],
+  "finance": {
+    "salesToday": 593700,
+    "grossProfit": 139400,
+    "expensesToday": 28600,
+    "taxDue": 68400,
+    "creditSales": 72400,
+    "refundsPending": 3,
+    "cashExpected": 248300,
+    "cashCounted": 248430
+  }
+}

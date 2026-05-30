@@ -1,0 +1,75 @@
+{
+  "students": [
+    {"id": "STU001", "name": "Emma Johnson", "email": "emma.johnson@school.edu", "phone": "+1 (555) 123-4567", "grade": 10, "class": "A", "dateOfBirth": "2008-03-15", "address": "123 Maple Street, Springfield", "enrollmentDate": "2022-09-01", "parentName": "Michael Johnson", "parentPhone": "+1 (555) 123-4568", "photo": "https://images.unsplash.com/photo-1494790108377-be9c29b29330?w=150", "status": "active", "gpa": 3.8, "gender": "female", "feeBalance": 0},
+    {"id": "STU002", "name": "Liam Smith", "email": "liam.smith@school.edu", "phone": "+1 (555) 234-5678", "grade": 11, "class": "B", "dateOfBirth": "2007-07-22", "address": "456 Oak Avenue, Springfield", "enrollmentDate": "2021-09-01", "parentName": "Sarah Smith", "parentPhone": "+1 (555) 234-5679", "photo": "https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?w=150", "status": "active", "gpa": 3.5, "gender": "male", "feeBalance": 250},
+    {"id": "STU003", "name": "Olivia Brown", "email": "olivia.brown@school.edu", "phone": "+1 (555) 345-6789", "grade": 9, "class": "C", "dateOfBirth": "2009-11-30", "address": "789 Pine Road, Springfield", "enrollmentDate": "2023-09-01", "parentName": "David Brown", "parentPhone": "+1 (555) 345-6790", "photo": "https://images.unsplash.com/photo-1438761681033-6461ffad8d80?w=150", "status": "active", "gpa": 3.9, "gender": "female", "feeBalance": 0},
+    {"id": "STU004", "name": "Noah Davis", "email": "noah.davis@school.edu", "phone": "+1 (555) 456-7890", "grade": 12, "class": "A", "dateOfBirth": "2006-05-14", "address": "321 Elm Street, Springfield", "enrollmentDate": "2020-09-01", "parentName": "Jennifer Davis", "parentPhone": "+1 (555) 456-7891", "photo": "https://images.unsplash.com/photo-1472099645785-5658abf4ff4e?w=150", "status": "active", "gpa": 3.7, "gender": "male", "feeBalance": 500},
+    {"id": "STU005", "name": "Ava Wilson", "email": "ava.wilson@school.edu", "phone": "+1 (555) 567-8901", "grade": 10, "class": "B", "dateOfBirth": "2008-09-08", "address": "654 Cedar Lane, Springfield", "enrollmentDate": "2022-09-01", "parentName": "Robert Wilson", "parentPhone": "+1 (555) 567-8902", "photo": "https://images.unsplash.com/photo-1544005313-94ddf0286df2?w=150", "status": "active", "gpa": 3.6, "gender": "female", "feeBalance": 100}
+  ],
+  "teachers": [
+    {"id": "TCH001", "name": "Dr. James Wilson", "email": "james.wilson@school.edu", "phone": "+1 (555) 111-2222", "subject": "Mathematics", "qualification": "PhD in Mathematics", "dateOfBirth": "1980-04-12", "address": "101 Teacher Lane, Springfield", "hireDate": "2015-08-15", "photo": "https://images.unsplash.com/photo-1500648767791-00dcc994a43e?w=150", "experience": 18, "classes": ["Grade 10A", "Grade 11B", "Grade 12A"], "salary": 65000},
+    {"id": "TCH002", "name": "Mrs. Emily Davis", "email": "emily.davis@school.edu", "phone": "+1 (555) 222-3333", "subject": "Science", "qualification": "MSc in Physics", "dateOfBirth": "1985-09-25", "address": "102 Teacher Lane, Springfield", "hireDate": "2018-08-20", "photo": "https://images.unsplash.com/photo-1438761681033-6461ffad8d80?w=150", "experience": 8, "classes": ["Grade 9C", "Grade 10B"], "salary": 58000},
+    {"id": "TCH003", "name": "Mr. Michael Brown", "email": "michael.brown@school.edu", "phone": "+1 (555) 333-4444", "subject": "English", "qualification": "MA in English Literature", "dateOfBirth": "1978-12-03", "address": "103 Teacher Lane, Springfield", "hireDate": "2010-08-10", "photo": "https://images.unsplash.com/photo-1472099645785-5658abf4ff4e?w=150", "experience": 16, "classes": ["Grade 10A", "Grade 11A", "Grade 12B"], "salary": 62000}
+  ],
+  "classes": [
+    {"id": "CLS001", "name": "Grade 9C", "grade": 9, "section": "C", "teacher": "Mrs. Emily Davis", "room": "Room 201", "schedule": {"Monday": ["Science", "Mathematics", "English", "History"], "Tuesday": ["Mathematics", "Science", "Physical Education", "Art"], "Wednesday": ["English", "History", "Mathematics", "Science"], "Thursday": ["History", "English", "Science", "Mathematics"], "Friday": ["Mathematics", "English", "History", "Science"]}, "students": ["STU003"], "capacity": 30, "currentEnrollment": 28},
+    {"id": "CLS002", "name": "Grade 10A", "grade": 10, "section": "A", "teacher": "Dr. James Wilson", "room": "Room 301", "schedule": {"Monday": ["Mathematics", "English", "Science", "History"], "Tuesday": ["English", "Mathematics", "Physical Education", "Art"], "Wednesday": ["Science", "History", "Mathematics", "English"], "Thursday": ["History", "Science", "English", "Mathematics"], "Friday": ["Mathematics", "Science", "History", "English"]}, "students": ["STU001", "STU004"], "capacity": 30, "currentEnrollment": 25},
+    {"id": "CLS003", "name": "Grade 10B", "grade": 10, "section": "B", "teacher": "Mrs. Emily Davis", "room": "Room 302", "schedule": {"Monday": ["Science", "Mathematics", "English", "History"], "Tuesday": ["Mathematics", "Science", "Physical Education", "Art"], "Wednesday": ["English", "History", "Mathematics", "Science"], "Thursday": ["History", "English", "Science", "Mathematics"], "Friday": ["Mathematics", "English", "History", "Science"]}, "students": ["STU005"], "capacity": 30, "currentEnrollment": 22}
+  ],
+  "grades": [
+    {"studentId": "STU001", "subject": "Mathematics", "grade": 92, "semester": "Fall 2023"},
+    {"studentId": "STU001", "subject": "English", "grade": 88, "semester": "Fall 2023"},
+    {"studentId": "STU001", "subject": "Science", "grade": 95, "semester": "Fall 2023"},
+    {"studentId": "STU001", "subject": "History", "grade": 85, "semester": "Fall 2023"},
+    {"studentId": "STU002", "subject": "Mathematics", "grade": 78, "semester": "Fall 2023"},
+    {"studentId": "STU002", "subject": "English", "grade": 82, "semester": "Fall 2023"},
+    {"studentId": "STU002", "subject": "Science", "grade": 75, "semester": "Fall 2023"},
+    {"studentId": "STU002", "subject": "History", "grade": 80, "semester": "Fall 2023"},
+    {"studentId": "STU003", "subject": "Mathematics", "grade": 98, "semester": "Fall 2023"},
+    {"studentId": "STU003", "subject": "English", "grade": 94, "semester": "Fall 2023"},
+    {"studentId": "STU003", "subject": "Science", "grade": 96, "semester": "Fall 2023"},
+    {"studentId": "STU003", "subject": "History", "grade": 90, "semester": "Fall 2023"},
+    {"studentId": "STU004", "subject": "Mathematics", "grade": 85, "semester": "Fall 2023"},
+    {"studentId": "STU004", "subject": "English", "grade": 88, "semester": "Fall 2023"},
+    {"studentId": "STU004", "subject": "Science", "grade": 82, "semester": "Fall 2023"},
+    {"studentId": "STU004", "subject": "History", "grade": 91, "semester": "Fall 2023"},
+    {"studentId": "STU005", "subject": "Mathematics", "grade": 80, "semester": "Fall 2023"},
+    {"studentId": "STU005", "subject": "English", "grade": 85, "semester": "Fall 2023"},
+    {"studentId": "STU005", "subject": "Science", "grade": 83, "semester": "Fall 2023"},
+    {"studentId": "STU005", "subject": "History", "grade": 79, "semester": "Fall 2023"}
+  ],
+  "attendance": [
+    {"date": "2024-01-08", "studentId": "STU001", "status": "present"},
+    {"date": "2024-01-08", "studentId": "STU002", "status": "present"},
+    {"date": "2024-01-08", "studentId": "STU003", "status": "absent"},
+    {"date": "2024-01-08", "studentId": "STU004", "status": "present"},
+    {"date": "2024-01-08", "studentId": "STU005", "status": "late"},
+    {"date": "2024-01-09", "studentId": "STU001", "status": "present"},
+    {"date": "2024-01-09", "studentId": "STU002", "status": "present"},
+    {"date": "2024-01-09", "studentId": "STU003", "status": "present"},
+    {"date": "2024-01-09", "studentId": "STU004", "status": "absent"},
+    {"date": "2024-01-09", "studentId": "STU005", "status": "present"},
+    {"date": "2024-01-10", "studentId": "STU001", "status": "present"},
+    {"date": "2024-01-10", "studentId": "STU002", "status": "late"},
+    {"date": "2024-01-10", "studentId": "STU003", "status": "present"},
+    {"date": "2024-01-10", "studentId": "STU004", "status": "present"},
+    {"date": "2024-01-10", "studentId": "STU005", "status": "present"}
+  ],
+  "stats": {
+    "totalStudents": 10000,
+    "totalTeachers": 300,
+    "totalClasses": 150,
+    "attendanceRate": 94.5,
+    "averageGPA": 3.2,
+    "feeCollection": {
+      "total": 1500000,
+      "collected": 1312500,
+      "pending": 187500,
+      "collectionRate": 87.5
+    },
+    "notifications": {
+      "unread": 12,
+      "total": 45
+    }
+  }
+}
