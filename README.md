@@ -15,15 +15,26 @@ python manage.py collectstatic --noinput
 
 Frontend API endpoints are configured with `VITE_POS_API_URL` and `VITE_INVENTORY_API_URL`.
 
-## Vercel
+## Separate Vercel Deployments
 
-This repo is configured for Vercel with:
+Deploy this repo as two Vercel projects.
 
-- `api/index.py` as the Django serverless entrypoint.
-- `vercel.json` routing `/api/*` and `/admin/*` to Django, and all other routes to the Vite app.
-- Root `requirements.txt` forwarding to `backend/requirements.txt` so Vercel installs Django and `psycopg`.
+Frontend project:
 
-Set these Vercel environment variables:
+- Root Directory: repo root
+- Framework Preset: Vite
+- Build Command: `npm run build`
+- Output Directory: `dist`
+- Set `VITE_POS_API_URL` and `VITE_INVENTORY_API_URL` to the backend project URL.
+
+Backend project:
+
+- Root Directory: `backend`
+- Vercel uses `backend/vercel.json`.
+- `backend/api/index.py` is the Django serverless entrypoint.
+- `backend/requirements.txt` installs Django and `psycopg`.
+
+Set these backend Vercel environment variables:
 
 ```text
 DATABASE_URL=postgresql://...
@@ -31,6 +42,7 @@ SECRET_KEY=...
 DEBUG=False
 ALLOWED_HOSTS=.vercel.app,your-domain.com
 CSRF_TRUSTED_ORIGINS=https://*.vercel.app,https://your-domain.com
+CORS_ALLOWED_ORIGINS=https://your-frontend-domain.com
 ```
 
 Run migrations against the production database before first use:
