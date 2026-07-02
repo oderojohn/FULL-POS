@@ -175,6 +175,12 @@ def shift_cash_summary(shift):
     sales_total = paid_sales.aggregate(total=DbSum("total"))["total"] or Decimal("0.00")
     payment_totals = _payment_totals_for_shift(shift)
 
+    # Cash payment amounts include what the customer tendered (may exceed sale total).
+    # Change is always returned in cash, so deduct total change_due to get net cash revenue.
+    total_change = paid_sales.aggregate(total=DbSum("change_due"))["total"] or Decimal("0.00")
+    raw_cash = Decimal(str(payment_totals.get(Payment.CASH, 0)))
+    payment_totals[Payment.CASH] = max(Decimal("0.00"), raw_cash - total_change)
+
     cash_out_types = [CashTransaction.CASH_OUT, CashTransaction.PAYOUT, CashTransaction.DROP]
     tx_cash_in = shift.cash_transactions.filter(transaction_type=CashTransaction.CASH_IN).aggregate(total=DbSum("amount"))["total"] or 0
     tx_cash_out = shift.cash_transactions.filter(transaction_type__in=cash_out_types).aggregate(total=DbSum("amount"))["total"] or 0
@@ -245,14 +251,12 @@ class SaleReturnViewSet(viewsets.ReadOnlyModelViewSet):
     def create_return(self, request):
         serializer = CreateSaleReturnSerializer(data=request.data, context={"request": request})
         serializer.is_valid(raise_exception=True)
-        sale_return = create_sale_return(**serializer.validated_data)
+        sale_return = create_sale_return(processed_by=request.user, **serializer.validated_data)
         return Response(SaleReturnSerializer(sale_return).data, status=status.HTTP_201_CREATED)
 
     @action(detail=True, methods=["post"])
     def approve(self, request, pk=None):
-        serializer = ApproveSaleReturnSerializer(data=request.data)
-        serializer.is_valid(raise_exception=True)
-        sale_return = approve_sale_return(sale_return=self.get_object(), user=serializer.validated_data["user"])
+        sale_return = approve_sale_return(sale_return=self.get_object(), user=request.user)
         return Response(SaleReturnSerializer(sale_return).data)
 
     @action(detail=True, methods=["post"])
@@ -261,16 +265,14 @@ class SaleReturnViewSet(viewsets.ReadOnlyModelViewSet):
         serializer.is_valid(raise_exception=True)
         sale_return = reject_sale_return(
             sale_return=self.get_object(),
-            user=serializer.validated_data["user"],
+            user=request.user,
             reason=serializer.validated_data.get("reason", ""),
         )
         return Response(SaleReturnSerializer(sale_return).data)
 
     @action(detail=True, methods=["post"])
     def complete(self, request, pk=None):
-        serializer = CompleteSaleReturnSerializer(data=request.data)
-        serializer.is_valid(raise_exception=True)
-        sale_return = complete_sale_return(sale_return=self.get_object(), user=serializer.validated_data["user"])
+        sale_return = complete_sale_return(sale_return=self.get_object(), user=request.user)
         return Response(SaleReturnSerializer(sale_return).data)
 
 
@@ -287,10 +289,16 @@ class PaymentViewSet(viewsets.ReadOnlyModelViewSet):
         method = self.request.query_params.get("method")
         sale_status = self.request.query_params.get("sale_status")
         search = (self.request.query_params.get("search") or "").strip()
+        date_from = _parse_iso_date(self.request.query_params.get("date_from"), "date_from")
+        date_to = _parse_iso_date(self.request.query_params.get("date_to"), "date_to")
         if method:
             queryset = queryset.filter(method=method)
         if sale_status:
             queryset = queryset.filter(sale__status=sale_status)
+        if date_from:
+            queryset = queryset.filter(sale__created_at__date__gte=date_from)
+        if date_to:
+            queryset = queryset.filter(sale__created_at__date__lte=date_to)
         if search:
             queryset = queryset.filter(
                 Q(reference__icontains=search)

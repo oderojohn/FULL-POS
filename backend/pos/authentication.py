@@ -1,3 +1,5 @@
+import hashlib
+
 from django.conf import settings
 from django.contrib.auth import get_user_model
 from django.core import signing
@@ -18,6 +20,10 @@ def make_pos_token(user):
         salt=TOKEN_SALT,
         compress=True,
     )
+
+
+def make_token_hash(token):
+    return hashlib.sha256(token.encode("utf-8")).hexdigest()
 
 
 class POSBearerAuthentication(BaseAuthentication):
@@ -43,6 +49,10 @@ class POSBearerAuthentication(BaseAuthentication):
             raise AuthenticationFailed("POS session expired.") from exc
         except signing.BadSignature as exc:
             raise AuthenticationFailed("Invalid POS session.") from exc
+
+        from .models import BlacklistedToken
+        if BlacklistedToken.is_blacklisted(make_token_hash(token)):
+            raise AuthenticationFailed("POS session has been revoked.")
 
         user = get_user_model().objects.filter(pk=payload.get("user_id")).first()
         if not user or not user.is_active:

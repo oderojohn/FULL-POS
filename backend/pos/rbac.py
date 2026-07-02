@@ -67,6 +67,7 @@ PERMISSION_CATALOG = {
     "admin.integrations": {"label": "Integrations", "module": "admin"},
     "admin.super": {"label": "Super admin platform", "module": "admin"},
     "admin.reports": {"label": "Administration reports", "module": "admin"},
+    "admin.scheduled_reports": {"label": "Scheduled email reports", "module": "admin"},
 }
 
 # Maps Administration UI sections to required permission (any one grants access; * always wins)
@@ -87,6 +88,7 @@ ADMIN_SECTION_PERMISSIONS = {
     "Integrations": ["admin.integrations", "admin.settings"],
     "Super Admin": ["admin.super"],
     "Reports": ["admin.reports", "reports.view"],
+    "Scheduled Reports": ["admin.scheduled_reports", "admin.reports", "admin.notifications"],
     "Alerts": ["alerts.view"],
     "Settings": ["settings.view", "admin.settings"],
 }
@@ -132,17 +134,33 @@ ROLE_PERMISSIONS = {
 
 # Access-level extras merged at login (additive to role permissions)
 ACCESS_LEVEL_PERMISSIONS = {
-    UserProfile.SUPER_ADMIN: ["admin.super", "admin.company"],
-    UserProfile.COMPANY_ADMIN: ["admin.branches", "admin.users", "admin.roles", "admin.settings"],
-    UserProfile.BRANCH_ADMIN: ["admin.users", "admin.roles"],
+    UserProfile.SUPER_ADMIN: ["admin.super", "admin.company", "admin.scheduled_reports", "admin.reports"],
+    UserProfile.COMPANY_ADMIN: ["admin.branches", "admin.users", "admin.roles", "admin.settings", "admin.scheduled_reports", "admin.reports"],
+    UserProfile.BRANCH_ADMIN: ["admin.users", "admin.roles", "admin.scheduled_reports"],
     UserProfile.BRANCH_STAFF: [],
 }
 
 
 def permissions_for_profile(profile):
-    """Resolve effective permission list for a user profile."""
+    """Resolve effective permission list for a user profile.
+
+    Priority:
+      1. If permission groups are assigned → use their combined permissions exclusively.
+      2. If no groups → use role-based permissions (role + access level).
+    """
     if not profile:
         return []
+    # Groups win — they fully define the rights (no mixing with role)
+    try:
+        groups = list(profile.permission_groups.all())
+        if groups:
+            group_perms = set()
+            for group in groups:
+                group_perms.update(group.permissions or [])
+            return sorted(group_perms)
+    except Exception:
+        pass
+    # No groups: fall back to role permissions
     if getattr(profile, "use_custom_permissions", False):
         return sorted(set(getattr(profile, "custom_permissions", []) or []))
     perms = set(ROLE_PERMISSIONS.get(profile.role, []))

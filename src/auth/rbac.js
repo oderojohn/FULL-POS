@@ -10,9 +10,6 @@ export const ADMIN_SECTIONS = {
   BRANCHES: 'Branches',
   USERS: 'Users',
   ROLES_PERMISSIONS: 'Roles & Permissions',
-  SECURITY: 'Security',
-  SYSTEM_SETTINGS: 'System Settings',
-  POS_OPERATIONS: 'POS Operations',
   STOCK_CONTROLS: 'Stock Controls',
   AUDIT_LOGS: 'Audit Logs',
   NOTIFICATIONS: 'Notifications',
@@ -22,8 +19,10 @@ export const ADMIN_SECTIONS = {
   INTEGRATIONS: 'Integrations',
   SUPER_ADMIN: 'Super Admin',
   REPORTS: 'Reports',
+  SCHEDULED_REPORTS: 'Scheduled Reports',
   ALERTS: 'Alerts',
   SETTINGS: 'Settings',
+  SYSTEM_HEALTH: 'System Health',
 }
 
 export const ADMIN_SECTION_POLICIES = {
@@ -31,9 +30,6 @@ export const ADMIN_SECTION_POLICIES = {
   [ADMIN_SECTIONS.BRANCHES]: ['admin.branches', 'branch.manage'],
   [ADMIN_SECTIONS.USERS]: ['admin.users', 'user.manage'],
   [ADMIN_SECTIONS.ROLES_PERMISSIONS]: ['admin.rbac', 'admin.roles', 'user.manage'],
-  [ADMIN_SECTIONS.SECURITY]: ['admin.security', 'admin.settings'],
-  [ADMIN_SECTIONS.SYSTEM_SETTINGS]: ['admin.system', 'admin.settings', 'settings.view'],
-  [ADMIN_SECTIONS.POS_OPERATIONS]: ['admin.pos_operations', 'admin.settings'],
   [ADMIN_SECTIONS.STOCK_CONTROLS]: ['admin.stock_controls', 'inventory.adjust', 'inventory.view'],
   [ADMIN_SECTIONS.AUDIT_LOGS]: ['admin.audit', 'sales.audit'],
   [ADMIN_SECTIONS.NOTIFICATIONS]: ['admin.notifications', 'alerts.view'],
@@ -43,8 +39,10 @@ export const ADMIN_SECTION_POLICIES = {
   [ADMIN_SECTIONS.INTEGRATIONS]: ['admin.integrations'],
   [ADMIN_SECTIONS.SUPER_ADMIN]: ['admin.super'],
   [ADMIN_SECTIONS.REPORTS]: ['admin.reports', 'reports.view'],
+  [ADMIN_SECTIONS.SCHEDULED_REPORTS]: ['admin.scheduled_reports', 'admin.reports', 'admin.notifications'],
   [ADMIN_SECTIONS.ALERTS]: ['admin.alerts', 'alerts.view'],
   [ADMIN_SECTIONS.SETTINGS]: ['admin.settings', 'settings.view'],
+  [ADMIN_SECTIONS.SYSTEM_HEALTH]: ['admin.system', 'admin.super'],
 }
 
 export const ROUTE_POLICIES = {
@@ -57,6 +55,8 @@ export const ROUTE_POLICIES = {
   '/sales-control/cashier-summary': { label: 'Cashier Summary', permissions: ['shift.view'] },
   '/sales-control/payments': { label: 'Payments', permissions: ['sales.payments'] },
   '/sales-control/discounts-log': { label: 'Discounts Log', permissions: ['sales.discounts', 'sale.discount'] },
+  '/sales-control/discount-engine': { label: 'Discount Engine', permissions: ['admin.pricing', 'sale.discount'] },
+  '/sales-control/price-scheduler': { label: 'Price Scheduler', permissions: ['admin.pricing'] },
   '/sales-control/customer-sales': { label: 'Customer Sales', permissions: ['sales.customer'] },
   '/sales-control/reports': { label: 'Reports', permissions: ['reports.view'] },
   '/sales-control/audit-logs': { label: 'Audit Logs', permissions: ['sales.audit', 'admin.audit'] },
@@ -77,9 +77,6 @@ export const ADMIN_ROUTE_POLICIES = Object.fromEntries([
   ['/admin/branches', ADMIN_SECTIONS.BRANCHES],
   ['/admin/users', ADMIN_SECTIONS.USERS],
   ['/admin/roles-permissions', ADMIN_SECTIONS.ROLES_PERMISSIONS],
-  ['/admin/security', ADMIN_SECTIONS.SECURITY],
-  ['/admin/system-settings', ADMIN_SECTIONS.SYSTEM_SETTINGS],
-  ['/admin/pos-operations', ADMIN_SECTIONS.POS_OPERATIONS],
   ['/admin/stock-controls', ADMIN_SECTIONS.STOCK_CONTROLS],
   ['/admin/audit-logs', ADMIN_SECTIONS.AUDIT_LOGS],
   ['/admin/notifications', ADMIN_SECTIONS.NOTIFICATIONS],
@@ -90,8 +87,10 @@ export const ADMIN_ROUTE_POLICIES = Object.fromEntries([
   ['/admin/mpesa-logs', ADMIN_SECTIONS.INTEGRATIONS],
   ['/admin/super-admin', ADMIN_SECTIONS.SUPER_ADMIN],
   ['/admin/reports', ADMIN_SECTIONS.REPORTS],
+  ['/admin/scheduled-reports', ADMIN_SECTIONS.SCHEDULED_REPORTS],
   ['/admin/alerts', ADMIN_SECTIONS.ALERTS],
   ['/admin/settings', ADMIN_SECTIONS.SETTINGS],
+  ['/admin/system-health', ADMIN_SECTIONS.SYSTEM_HEALTH],
 ].map(([path, section]) => [path, { label: section, adminSection: section }]))
 
 export const APP_ROUTE_POLICIES = {
@@ -114,6 +113,7 @@ const ROLE_FALLBACK_PERMISSIONS = {
     'reports.view',
     'inventory.view',
     'inventory.products',
+    'admin.pricing',
   ],
   inventory: [
     'dashboard.view',
@@ -164,30 +164,25 @@ export const getSessionPermissions = (session) => {
   const role = getRole(session)
   const profile = session.profile || {}
 
-  if (profile.use_custom_permissions) {
-    if (Array.isArray(profile.custom_permissions)) {
-      return normalizePermissions([profile.custom_permissions])
-    }
-    const customExplicitPermissions = normalizePermissions([
-      profile.effective_permissions,
-      profile.permissions,
-      session.permissions,
-    ])
-    return customExplicitPermissions
-  }
-
-  if (ROLE_FALLBACK_PERMISSIONS[role]) {
-    return ROLE_FALLBACK_PERMISSIONS[role]
-  }
-
+  // Group-based permissions from the backend always take priority
   const explicitPermissions = normalizePermissions([
     session.permissions,
-    profile.permissions,
     profile.effective_permissions,
+    profile.permissions,
   ])
 
-  if (explicitPermissions.length || hasExplicitPermissions(session) || session.profile?.use_custom_permissions) {
+  if (explicitPermissions.length) {
     return explicitPermissions
+  }
+
+  // Custom permissions override (legacy, no groups assigned)
+  if (profile.use_custom_permissions && Array.isArray(profile.custom_permissions)) {
+    return normalizePermissions([profile.custom_permissions])
+  }
+
+  // Role-based fallback — only reached when the backend sends no permissions at all
+  if (ROLE_FALLBACK_PERMISSIONS[role]) {
+    return ROLE_FALLBACK_PERMISSIONS[role]
   }
 
   return []

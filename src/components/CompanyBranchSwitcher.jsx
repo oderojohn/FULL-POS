@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react'
 import { useAuth } from '../auth/AuthContext'
 import { posApi } from '../api/posApi'
+import { Spinner } from './LoadingKit'
 
 export default function CompanyBranchSwitcher() {
   const auth = useAuth()
@@ -67,9 +68,9 @@ export default function CompanyBranchSwitcher() {
 
   if (loading) {
     return (
-      <div className="flex items-center space-x-4">
-        <div className="animate-pulse h-8 w-32 bg-gray-300 rounded"></div>
-        <div className="animate-pulse h-8 w-32 bg-gray-300 rounded"></div>
+      <div className="flex items-center gap-2 text-sm text-slate-500">
+        <Spinner size="sm" color="slate" />
+        <span>Loading…</span>
       </div>
     )
   }

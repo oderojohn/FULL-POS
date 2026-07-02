@@ -4,7 +4,7 @@ Full POS application with a React/Vite frontend and Django REST backend.
 
 ## Production setup
 
-Backend configuration is environment-driven. Set `DATABASE_URL`, `SECRET_KEY`, `DEBUG=False`, `ALLOWED_HOSTS`, and `CSRF_TRUSTED_ORIGINS` in the deployment environment before running migrations and starting the server.
+Backend configuration is environment-driven. Set `DATABASE_URL`, a unique `SECRET_KEY`, `DEBUG=False`, `ALLOWED_HOSTS`, and `CSRF_TRUSTED_ORIGINS` in the deployment environment before running migrations and starting the server. Use `USE_SQLITE=True` only for local development or tests.
 
 ```powershell
 cd backend
@@ -15,17 +15,23 @@ python manage.py collectstatic --noinput
 
 Frontend API endpoints are configured with `VITE_POS_API_URL` and `VITE_INVENTORY_API_URL`.
 
-## Separate Vercel Deployments
+Local verification with the SQLite database:
 
-Deploy this repo as two Vercel projects.
+```powershell
+cd backend
+$env:USE_SQLITE='True'
+python manage.py test
+```
 
-Frontend project:
+## Web deployment: Netlify frontend + Vercel backend
 
-- Root Directory: repo root
-- Framework Preset: Vite
-- Build Command: `npm run build`
-- Output Directory: `dist`
-- Set `VITE_POS_API_URL` and `VITE_INVENTORY_API_URL` to the backend project URL.
+Frontend on Netlify:
+
+- Base directory: repo root
+- Build command: `npm run build`
+- Publish directory: `dist`
+- Config: `netlify.toml` (SPA redirect to `index.html`)
+- Set `VITE_POS_API_URL` and `VITE_INVENTORY_API_URL` in Netlify's environment variables to the deployed backend URL, e.g. `https://your-backend.vercel.app/api/pos` and `https://your-backend.vercel.app/api/inventory`.
 
 Backend project:
 
@@ -43,6 +49,10 @@ DEBUG=False
 ALLOWED_HOSTS=.vercel.app,your-domain.com
 CSRF_TRUSTED_ORIGINS=https://*.vercel.app,https://your-domain.com
 CORS_ALLOWED_ORIGINS=https://your-frontend-domain.com
+SECURE_SSL_REDIRECT=True
+SECURE_HSTS_SECONDS=31536000
+SECURE_HSTS_INCLUDE_SUBDOMAINS=True
+SECURE_HSTS_PRELOAD=True
 ```
 
 Run migrations against the production database before first use:

@@ -48,14 +48,14 @@ class StocktakeItemInline(admin.TabularInline):
 
 @admin.register(Company)
 class CompanyAdmin(admin.ModelAdmin):
-    list_display = ("name", "currency", "vat_rate", "is_active", "created_at")
+    list_display = ("name", "code", "currency", "vat_rate", "is_active", "created_at")
     list_filter = ("is_active", "currency")
-    search_fields = ("name",)
+    search_fields = ("name", "code", "id")
     readonly_fields = ("created_at", "updated_at")
-    
+
     fieldsets = (
         ("Company Info", {
-            "fields": ("name", "currency", "vat_rate")
+            "fields": ("name", "code", "currency", "vat_rate")
         }),
         ("Status", {
             "fields": ("is_active",)
@@ -73,6 +73,7 @@ class BranchAdmin(admin.ModelAdmin):
     list_filter = ("is_active", "company")
     search_fields = ("name", "code", "location")
     readonly_fields = ("created_at", "updated_at")
+    autocomplete_fields = ["company"]
     
     fieldsets = (
         ("Branch Info", {
@@ -208,17 +209,18 @@ class UserProfileAdmin(admin.ModelAdmin):
     list_filter = ("role", "access_level", "is_active", "company", "branch")
     search_fields = ("user__username", "user__first_name", "user__last_name")
     readonly_fields = ("created_at", "updated_at")
-    
+
     fieldsets = (
         ("User Info", {
             "fields": ("user",)
         }),
         ("Position & Access", {
-            "fields": ("role", "access_level", "pin")
+            "fields": ("pos_username", "role", "access_level", "pin"),
+            "description": "pos_username is the login name within this company (can repeat across companies). Leave PIN blank to disable PIN login.",
         }),
         ("Scope", {
             "fields": ("company", "branch"),
-            "description": "Define which company and branch this user can access"
+            "description": "Company is auto-filled from branch on save.",
         }),
         ("Status", {
             "fields": ("is_active",)
@@ -228,10 +230,27 @@ class UserProfileAdmin(admin.ModelAdmin):
             "classes": ("collapse",)
         }),
     )
-    
+
     def get_username(self, obj):
         return obj.user.get_full_name() or obj.user.username
     get_username.short_description = "User"
+
+    def save_model(self, request, obj, form, change):
+        from django.contrib.auth.hashers import make_password, is_password_usable
+        raw_pin = form.cleaned_data.get("pin", "")
+        if raw_pin and not is_password_usable(raw_pin):
+            # already a hash — don't re-hash
+            pass
+        elif raw_pin and not raw_pin.startswith(("pbkdf2_", "bcrypt", "argon2")):
+            obj.pin = make_password(raw_pin)
+        elif not raw_pin:
+            if change:
+                obj.pin = UserProfile.objects.get(pk=obj.pk).pin  # keep existing
+            else:
+                obj.pin = ""
+        if obj.branch and not obj.company:
+            obj.company = obj.branch.company
+        super().save_model(request, obj, form, change)
 
 
 @admin.register(MpesaStkLog)

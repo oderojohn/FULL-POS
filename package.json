@@ -1,7 +1,10 @@
 {
-  "name": "school-management-system",
-  "version": "0.1.0",
+  "name": "nexapos",
+  "version": "1.0.0",
   "private": true,
+  "description": "Nexa POS — offline-first point of sale system",
+  "author": "Nexa POS",
+  "main": "electron/main.js",
   "dependencies": {
     "react": "^18.2.0",
     "react-dom": "^18.2.0",
@@ -11,13 +14,72 @@
   "devDependencies": {
     "@vitejs/plugin-react": "^4.2.0",
     "autoprefixer": "^10.4.16",
+    "concurrently": "^8.2.2",
+    "electron": "^31.0.0",
+    "electron-builder": "^24.13.3",
+    "electron-updater": "^6.1.7",
     "postcss": "^8.4.32",
     "tailwindcss": "^3.3.0",
-    "vite": "^5.0.0"
+    "vite": "^5.0.0",
+    "wait-on": "^7.2.0"
   },
   "scripts": {
+    "dev:backend": ".venv/Scripts/python.exe backend/manage.py runserver 8000",
+    "local": "concurrently --kill-others --names API,UI --prefix-colors cyan,magenta \".venv/Scripts/python.exe backend/manage.py runserver 8000\" \"vite\"",
     "dev": "vite",
     "build": "vite build",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "build:pos": "vite build --config vite.electron.config.js",
+    "build:server": "cd backend && python -m PyInstaller build.spec --distpath dist-new --noconfirm",
+    "electron:dev": "concurrently \"npm run dev\" \"wait-on http://127.0.0.1:5173 && NODE_ENV=development electron .\"",
+    "electron:dev:pos": "concurrently \"vite --config vite.electron.config.js\" \"wait-on http://127.0.0.1:5174 && ELECTRON_DEV_URL=http://127.0.0.1:5174 NODE_ENV=development electron .\"",
+    "electron:build": "npm run build:pos && npm run build:server && electron-builder build --win --x64",
+    "electron:preview": "NODE_ENV=development electron ."
+  },
+  "build": {
+    "appId": "ke.co.nexapos.app",
+    "productName": "Nexa POS",
+    "artifactName": "${productName}-Setup-${version}.${ext}",
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "electron/**/*",
+      "electron-dist/**/*",
+      "!node_modules"
+    ],
+    "extraResources": [
+      {
+        "from": "backend/dist-new/nexapos-server",
+        "to": "server",
+        "filter": ["**/*"]
+      }
+    ],
+    "win": {
+      "target": [{ "target": "nsis", "arch": ["x64"] }],
+      "icon": "public/icon.ico"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "Nexa POS"
+    },
+    "mac": {
+      "target": "dmg",
+      "category": "public.app-category.business",
+      "icon": "public/icon.icns"
+    },
+    "linux": {
+      "target": "AppImage",
+      "category": "Office",
+      "icon": "public/icon.png"
+    },
+    "publish": {
+      "provider": "github",
+      "owner": "your-org",
+      "repo": "nexapos"
+    }
   }
 }

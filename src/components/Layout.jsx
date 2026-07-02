@@ -2,13 +2,15 @@ import React, { useMemo, useState, useEffect, useCallback } from 'react'
 import { NavLink } from 'react-router-dom'
 import {
   FaBarcode, FaBell, FaBoxes, FaBuilding, FaCashRegister, FaChartLine, FaChevronDown,
-  FaChevronRight, FaClipboardList, FaCog, FaDatabase, FaExchangeAlt, FaFileInvoiceDollar,
-  FaHome, FaMoneyBillWave, FaReceipt, FaShieldAlt, FaShoppingCart, FaTags,
-  FaTruck, FaUserShield, FaUsers, FaWarehouse, FaBars, FaTimes
+  FaChevronRight, FaClipboardList, FaCog, FaDatabase, FaEnvelope, FaExchangeAlt, FaFileInvoiceDollar,
+  FaHome, FaMoneyBillWave, FaReceipt, FaServer, FaShieldAlt, FaShoppingCart, FaTags,
+  FaTruck, FaUserShield, FaUsers, FaWarehouse, FaBars, FaTimes, FaWifi, FaExclamationTriangle, FaSync
 } from 'react-icons/fa'
 import { useAuth } from '../auth/AuthContext'
 import { ADMIN_ROUTE_POLICIES, ROUTE_POLICIES } from '../auth/rbac'
 import { posApi } from '../api/posApi'
+import { useOfflineStatus } from '../hooks/useOfflineStatus'
+import { Spinner } from './LoadingKit'
 
 const menuStructure = [
   { path: '/dashboard', icon: FaHome, ...ROUTE_POLICIES['/dashboard'] },
@@ -24,6 +26,8 @@ const menuStructure = [
       { path: '/sales-control/cashier-summary', icon: FaCashRegister, ...ROUTE_POLICIES['/sales-control/cashier-summary'] },
       { path: '/sales-control/payments', icon: FaReceipt, ...ROUTE_POLICIES['/sales-control/payments'] },
       { path: '/sales-control/discounts-log', icon: FaTags, ...ROUTE_POLICIES['/sales-control/discounts-log'] },
+      { path: '/sales-control/discount-engine', icon: FaTags, ...ROUTE_POLICIES['/sales-control/discount-engine'] },
+      { path: '/sales-control/price-scheduler', icon: FaChartLine, ...ROUTE_POLICIES['/sales-control/price-scheduler'] },
       { path: '/sales-control/customer-sales', icon: FaUsers, ...ROUTE_POLICIES['/sales-control/customer-sales'] },
       { path: '/sales-control/reports', icon: FaChartLine, ...ROUTE_POLICIES['/sales-control/reports'] },
       { path: '/sales-control/audit-logs', icon: FaShieldAlt, ...ROUTE_POLICIES['/sales-control/audit-logs'] },
@@ -52,9 +56,6 @@ const menuStructure = [
       { path: '/admin/branches', icon: FaWarehouse, ...ADMIN_ROUTE_POLICIES['/admin/branches'] },
       { path: '/admin/users', icon: FaUsers, ...ADMIN_ROUTE_POLICIES['/admin/users'] },
       { path: '/admin/roles-permissions', icon: FaShieldAlt, ...ADMIN_ROUTE_POLICIES['/admin/roles-permissions'] },
-      { path: '/admin/security', icon: FaUserShield, ...ADMIN_ROUTE_POLICIES['/admin/security'] },
-      { path: '/admin/system-settings', icon: FaCog, ...ADMIN_ROUTE_POLICIES['/admin/system-settings'] },
-      { path: '/admin/pos-operations', icon: FaCashRegister, ...ADMIN_ROUTE_POLICIES['/admin/pos-operations'] },
       { path: '/admin/stock-controls', icon: FaBoxes, ...ADMIN_ROUTE_POLICIES['/admin/stock-controls'] },
       { path: '/admin/audit-logs', icon: FaClipboardList, ...ADMIN_ROUTE_POLICIES['/admin/audit-logs'] },
       { path: '/admin/notifications', icon: FaBell, ...ADMIN_ROUTE_POLICIES['/admin/notifications'] },
@@ -65,7 +66,9 @@ const menuStructure = [
       { path: '/admin/mpesa-logs', icon: FaExchangeAlt, label: 'M-Pesa Logs', ...ADMIN_ROUTE_POLICIES['/admin/mpesa-logs'] },
       { path: '/admin/super-admin', icon: FaUserShield, ...ADMIN_ROUTE_POLICIES['/admin/super-admin'] },
       { path: '/admin/reports', icon: FaChartLine, ...ADMIN_ROUTE_POLICIES['/admin/reports'] },
+      { path: '/admin/scheduled-reports', icon: FaEnvelope, ...ADMIN_ROUTE_POLICIES['/admin/scheduled-reports'] },
       { path: '/admin/alerts', icon: FaBell, ...ADMIN_ROUTE_POLICIES['/admin/alerts'] },
+      { path: '/admin/system-health', icon: FaServer, ...ADMIN_ROUTE_POLICIES['/admin/system-health'] },
       { path: '/admin/settings', icon: FaCog, ...ADMIN_ROUTE_POLICIES['/admin/settings'] },
     ],
   },
@@ -95,11 +98,14 @@ const Layout = ({ children }) => {
     canSwitchCompany,
     reloadSignal,
     canAccessPolicy,
+    isSuperAdmin,
+    isBranchAdmin,
   } = useAuth()
+  const { effectivelyOnline, pendingCount, syncing } = useOfflineStatus()
   const [sidebarOpen, setSidebarOpen] = useState(false)
   const [expandedMenus, setExpandedMenus] = useState({ 'Sales Control': true, Inventory: true })
-  const [companies, setCompanies] = useState([])
-  const [branches, setBranches] = useState([])
+  const [companies, setCompanies] = useState(() => (company ? [company] : []))
+  const [branches, setBranches] = useState(() => (company_branches?.length ? company_branches : branch ? [branch] : []))
   const [selectedCompany, setSelectedCompany] = useState(() => {
     try { return JSON.parse(localStorage.getItem('selectedCompany')) || null } catch { return null }
   })
@@ -127,11 +133,10 @@ const Layout = ({ children }) => {
         })
       : branches
     ).filter((branch) => {
-      if (isAdmin) return true
-      if (profile?.role === 'manager' || profile?.role === 'inventory') return true
+      if (isAdmin || isBranchAdmin) return true
       return Number(branch.id) === Number(profileBranchId)
     })
-  ), [branches, isAdmin, profile?.role, profileBranchId, selectedCompany])
+  ), [branches, isAdmin, isBranchAdmin, profileBranchId, selectedCompany])
 
   useEffect(() => {
     if (selectedCompany) {
@@ -162,10 +167,10 @@ const Layout = ({ children }) => {
     return canAccessPolicy(item)
   }, [can, canAccessPolicy])
 
-  const visibleMenu = menuStructure.filter((item) => {
+  const visibleMenu = useMemo(() => menuStructure.filter((item) => {
     if (item.submenu) return item.submenu.some((sub) => canViewItem(sub))
     return canViewItem(item)
-  })
+  }), [canViewItem])
 
   const toggleSubmenu = (label) => {
     setExpandedMenus((prev) => ({ ...prev, [label]: !prev[label] }))
@@ -214,21 +219,23 @@ const Layout = ({ children }) => {
   }, [availableCompanies, canSwitchCompany, switchCompany])
 
   useEffect(() => {
+    if (!isSuperAdmin) return
+    let cancelled = false
     const loadData = async () => {
       try {
         const [companiesResponse, branchesResponse] = await Promise.all([
           posApi.companies?.() || [],
           posApi.branches()
         ])
-        setCompanies(unwrapRows(companiesResponse))
-        setBranches(unwrapRows(branchesResponse))
-      } catch {
-        setCompanies([])
-        setBranches([])
-      }
+        if (!cancelled) {
+          setCompanies(unwrapRows(companiesResponse))
+          setBranches(unwrapRows(branchesResponse))
+        }
+      } catch { /* keep AuthContext-seeded values on error */ }
     }
     loadData()
-  }, [])
+    return () => { cancelled = true }
+  }, [isSuperAdmin])
 
   useEffect(() => {
     if (company) setCompanies((current) => (current.some((item) => item.id === company.id) ? current : [company]))
@@ -356,45 +363,86 @@ const Layout = ({ children }) => {
             <button onClick={() => setSidebarOpen(true)} className="lg:hidden text-slate-600 hover:text-slate-900 p-2 -ml-2" aria-label="Open navigation">
               <FaBars size={22} />
             </button>
-            <div className="flex gap-3 min-w-0">
-              {availableCompanies.length > 0 ? (
-                <div className="flex flex-col">
-                  <p className="text-xs text-slate-500">Company</p>
-                  <select
-                    value={selectedCompany?.id || ''}
-                    onChange={(e) => handleCompanyChange(e.target.value)}
-                    disabled={!canSwitchCompany || availableCompanies.length <= 1 || isSwitchingBranch}
-                    className="max-w-[9rem] sm:max-w-[14rem] text-sm font-semibold text-slate-800 bg-transparent focus:outline-none cursor-pointer disabled:cursor-default"
-                  >
-                    {availableCompanies.map((company) => (
-                      <option key={company.id} value={company.id}>{company.name}</option>
-                    ))}
-                  </select>
+            <div className="flex items-center gap-2 min-w-0">
+              {/* Company pill */}
+              {availableCompanies.length > 0 && (
+                <div className="flex items-center gap-1.5 rounded-lg border border-slate-200 bg-slate-50 px-2.5 py-1.5 hover:bg-slate-100 transition-colors">
+                  <FaBuilding className="text-slate-400 text-[10px] shrink-0" />
+                  {canSwitchCompany && availableCompanies.length > 1 ? (
+                    <>
+                      <select
+                        value={selectedCompany?.id || ''}
+                        onChange={(e) => handleCompanyChange(e.target.value)}
+                        disabled={isSwitchingBranch}
+                        className="max-w-[8rem] sm:max-w-[12rem] text-xs font-semibold text-slate-700 bg-transparent focus:outline-none cursor-pointer"
+                      >
+                        {availableCompanies.map((co) => (
+                          <option key={co.id} value={co.id}>{co.name}</option>
+                        ))}
+                      </select>
+                      <FaChevronDown className="text-slate-400 text-[9px] shrink-0 pointer-events-none" />
+                    </>
+                  ) : (
+                    <span className="max-w-[8rem] sm:max-w-[12rem] truncate text-xs font-semibold text-slate-700">
+                      {selectedCompany?.name || 'Company'}
+                    </span>
+                  )}
                 </div>
-              ) : null}
-              <div className="flex flex-col">
-                <p className="text-xs text-slate-500">Active branch</p>
-                <select
-                  value={selectedBranch?.id || ''}
-                  onChange={(e) => handleBranchChange(e.target.value)}
-                  disabled={!canSwitchBranch || visibleBranches.length <= 1 || isSwitchingBranch}
-                  className="max-w-[9rem] sm:max-w-[14rem] text-sm font-semibold text-slate-800 bg-transparent focus:outline-none cursor-pointer disabled:cursor-default disabled:opacity-50"
-                >
-                  {visibleBranches.map((branch) => (
-                    <option key={branch.id} value={branch.id}>{branch.name}</option>
-                  ))}
-                </select>
-                {switchError && <p className="text-xs text-red-600 mt-1">{switchError}</p>}
-                {isSwitchingBranch && <p className="text-xs text-slate-500 mt-1">Switching...</p>}
+              )}
+
+              {/* Branch pill */}
+              <div className="flex items-center gap-1.5 rounded-lg border border-emerald-200 bg-emerald-50 px-2.5 py-1.5 hover:bg-emerald-100 transition-colors">
+                <FaWarehouse className="text-emerald-500 text-[10px] shrink-0" />
+                {canSwitchBranch && visibleBranches.length > 1 ? (
+                  <>
+                    <select
+                      value={selectedBranch?.id || ''}
+                      onChange={(e) => handleBranchChange(e.target.value)}
+                      disabled={isSwitchingBranch}
+                      className="max-w-[8rem] sm:max-w-[12rem] text-xs font-semibold text-emerald-800 bg-transparent focus:outline-none cursor-pointer"
+                    >
+                      {visibleBranches.map((b) => (
+                        <option key={b.id} value={b.id}>{b.name}</option>
+                      ))}
+                    </select>
+                    <FaChevronDown className="text-emerald-400 text-[9px] shrink-0 pointer-events-none" />
+                  </>
+                ) : (
+                  <span className="max-w-[8rem] sm:max-w-[12rem] truncate text-xs font-semibold text-emerald-800">
+                    {selectedBranch?.name || branch?.name || 'Branch'}
+                  </span>
+                )}
+                {isSwitchingBranch && <Spinner size="sm" color="emerald" />}
               </div>
+
+              {switchError && (
+                <span className="text-[11px] text-red-600 font-medium">{switchError}</span>
+              )}
             </div>
           </div>
           <div className="flex items-center gap-3">
+            {/* Offline / sync indicator */}
+            {!effectivelyOnline ? (
+              <span className="flex items-center gap-1.5 rounded-full bg-amber-100 px-2.5 py-1 text-xs font-bold text-amber-700">
+                <FaExclamationTriangle size={11} />
+                OFFLINE{pendingCount > 0 ? ` · ${pendingCount} pending` : ''}
+              </span>
+            ) : syncing ? (
+              <span className="flex items-center gap-1.5 rounded-full bg-blue-100 px-2.5 py-1 text-xs font-bold text-blue-700 animate-pulse">
+                <FaSync size={11} className="animate-spin" />
+                Syncing…
+              </span>
+            ) : pendingCount > 0 ? (
+              <span className="flex items-center gap-1.5 rounded-full bg-emerald-100 px-2.5 py-1 text-xs font-bold text-emerald-700">
+                <FaWifi size={11} />
+                {pendingCount} to sync
+              </span>
+            ) : null}
             <button className="relative p-2 text-slate-500 hover:text-slate-900">
               <FaBell />
               <span className="absolute top-1 right-1 w-2 h-2 bg-red-500 rounded-full" />
             </button>
-            <span className="hidden sm:inline text-sm text-slate-700">Welcome, {user?.username || 'User'} ({profile?.role || 'pos'})</span>
+            <span className="hidden sm:inline text-sm text-slate-700">Welcome, {user?.username || 'User'}</span>
             <button onClick={logout} className="rounded bg-slate-100 px-3 py-2 text-xs font-bold text-slate-700 hover:bg-slate-200">Logout</button>
             <div className="w-9 h-9 bg-emerald-600 rounded-lg flex items-center justify-center text-white font-semibold">{(user?.username || 'U')[0].toUpperCase()}</div>
           </div>

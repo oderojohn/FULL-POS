@@ -11,6 +11,7 @@ import InventoryModule from './pages/PosInventory'
 import Administration from './pages/PosAdministration'
 import PosMpesaLogs from './pages/PosMpesaLogs'
 import Login from './pages/Login'
+import PosConnect from './pages/PosConnect'
 
 const RequireAuth = ({ children }) => {
   const { session } = useAuth()
@@ -64,6 +65,14 @@ function App() {
     )
   }
 
+  if (location.pathname === '/connect') {
+    return (
+      <Routes>
+        <Route path="/connect" element={<PosConnect />} />
+      </Routes>
+    )
+  }
+
   if (!session) return <Navigate to="/login" replace state={{ from: location }} />
 
   return (
@@ -82,6 +91,8 @@ function App() {
         <Route path="/sales-control/cashier-shifts" element={<Navigate to="/sales-control/cashier-summary" replace />} />
         <Route path="/sales-control/payments" element={<GuardedRoute path="/sales-control/payments"><SalesControl initialSection="Payments" /></GuardedRoute>} />
         <Route path="/sales-control/discounts-log" element={<GuardedRoute path="/sales-control/discounts-log"><SalesControl initialSection="Discounts Log" /></GuardedRoute>} />
+        <Route path="/sales-control/discount-engine" element={<GuardedRoute path="/sales-control/discount-engine"><SalesControl initialSection="Discount Engine" /></GuardedRoute>} />
+        <Route path="/sales-control/price-scheduler" element={<GuardedRoute path="/sales-control/price-scheduler"><SalesControl initialSection="Price Scheduler" /></GuardedRoute>} />
         <Route path="/sales-control/customer-sales" element={<GuardedRoute path="/sales-control/customer-sales"><SalesControl initialSection="Customer Sales" /></GuardedRoute>} />
         <Route path="/sales-control/reports" element={<GuardedRoute path="/sales-control/reports"><SalesControl initialSection="Reports" /></GuardedRoute>} />
         <Route path="/sales-control/audit-logs" element={<GuardedRoute path="/sales-control/audit-logs"><SalesControl initialSection="Audit Logs" /></GuardedRoute>} />
@@ -108,9 +119,6 @@ function App() {
         <Route path="/admin/branches" element={<AdminRoute path="/admin/branches" section="Branches" />} />
         <Route path="/admin/users" element={<AdminRoute path="/admin/users" section="Users" />} />
         <Route path="/admin/roles-permissions" element={<AdminRoute path="/admin/roles-permissions" section="Roles & Permissions" />} />
-        <Route path="/admin/security" element={<AdminRoute path="/admin/security" section="Security" />} />
-        <Route path="/admin/system-settings" element={<AdminRoute path="/admin/system-settings" section="System Settings" />} />
-        <Route path="/admin/pos-operations" element={<AdminRoute path="/admin/pos-operations" section="POS Operations" />} />
         <Route path="/admin/stock-controls" element={<AdminRoute path="/admin/stock-controls" section="Stock Controls" />} />
         <Route path="/admin/audit-logs" element={<AdminRoute path="/admin/audit-logs" section="Audit Logs" />} />
         <Route path="/admin/notifications" element={<AdminRoute path="/admin/notifications" section="Notifications" />} />
@@ -121,8 +129,10 @@ function App() {
         <Route path="/admin/mpesa-logs" element={<RequirePolicy policy={ADMIN_ROUTE_POLICIES['/admin/integrations']}><PosMpesaLogs /></RequirePolicy>} />
         <Route path="/admin/super-admin" element={<AdminRoute path="/admin/super-admin" section="Super Admin" />} />
         <Route path="/admin/reports" element={<AdminRoute path="/admin/reports" section="Reports" />} />
+        <Route path="/admin/scheduled-reports" element={<AdminRoute path="/admin/scheduled-reports" section="Scheduled Reports" />} />
         <Route path="/admin/alerts" element={<AdminRoute path="/admin/alerts" section="Alerts" />} />
         <Route path="/admin/settings" element={<AdminRoute path="/admin/settings" section="Settings" />} />
+        <Route path="/admin/system-health" element={<AdminRoute path="/admin/system-health" section="System Health" />} />
         <Route path="/users" element={<Navigate to="/admin/users" />} />
         <Route path="/branches" element={<Navigate to="/admin/branches" />} />
         <Route path="/audit-logs" element={<Navigate to="/admin/audit-logs" />} />

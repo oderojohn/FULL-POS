@@ -1,6 +1,7 @@
 from decimal import Decimal
 
 from django.contrib.auth import get_user_model
+from django.contrib.auth.hashers import make_password
 from django.test import TestCase
 from rest_framework.test import APIClient
 
@@ -12,7 +13,8 @@ from .services import approve_stocktake, checkout_sale, complete_sale_return, cr
 class PosRuleTests(TestCase):
     def setUp(self):
         self.user = get_user_model().objects.create_user(username="cashier", password="pass")
-        self.branch = Branch.objects.create(code="MAIN", name="Main Branch")
+        self.company = Company.objects.create(name="Main Company", code="MAIN")
+        self.branch = Branch.objects.create(company=self.company, code="MAIN", name="Main Branch")
         self.register = Register.objects.create(branch=self.branch, code="POS-01", name="Counter 01")
         self.category = Category.objects.create(branch=self.branch, name="Beers")
         self.product = Product.objects.create(
@@ -118,7 +120,7 @@ class PosRuleTests(TestCase):
         self.assertEqual(session.status, StocktakeSession.APPROVED)
 
     def test_pin_login_returns_role_permissions(self):
-        UserProfile.objects.create(user=self.user, pin="1234", role=UserProfile.MANAGER, branch=self.branch)
+        UserProfile.objects.create(user=self.user, pin=make_password("1234"), role=UserProfile.MANAGER, branch=self.branch)
         client = APIClient()
 
         response = client.post("/api/pos/auth/login/", {"username": "cashier", "pin": "1234"}, format="json")
@@ -205,7 +207,7 @@ class PosRuleTests(TestCase):
     def test_login_token_scopes_branch_reads_to_profile_branch(self):
         UserProfile.objects.create(
             user=self.user,
-            pin="1234",
+            pin=make_password("1234"),
             role=UserProfile.CASHIER,
             access_level=UserProfile.BRANCH_STAFF,
             branch=self.branch,
@@ -273,7 +275,7 @@ class PosRuleTests(TestCase):
         self.assertIn("product", response.data)
 
     def test_company_admin_cannot_list_other_company_branches(self):
-        other_company = Company.objects.create(name="Other Company")
+        other_company = Company.objects.create(name="Other Company", code="OTHER")
         Branch.objects.create(company=other_company, code="OTHER", name="Other Branch")
         UserProfile.objects.create(
             user=self.user,

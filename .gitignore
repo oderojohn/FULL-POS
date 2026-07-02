@@ -13,3 +13,11 @@ backend/mpesa_venv/
 node_modules/
 dist/
 .vite/
+dist-electron/
+electron-dist/
+release/
+backend/build/
+backend/dist-new/
+backend/staticfiles/
+*.bak
+/local/

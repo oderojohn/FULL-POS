@@ -61,12 +61,8 @@ export const AuthProvider = ({ children }) => {
       
       localStorage.setItem(STORAGE_KEY, JSON.stringify(updatedSession))
       setSession(updatedSession)
-      
-      // Trigger reload signal if backend indicates to do so
-      if (response.reload) {
-        setReloadSignal(prev => prev + 1)
-      }
-      
+      setReloadSignal(prev => prev + 1)
+
       return { success: true, reload: response.reload, session: updatedSession }
     } catch (error) {
       console.error('Branch switch failed:', error)
@@ -78,7 +74,7 @@ export const AuthProvider = ({ children }) => {
     if (!session) throw new Error('Not authenticated')
     try {
       const response = await posApi.switchCompany({ company: companyId })
-      
+
       // Update session with new context data
       const updatedSession = {
         ...session,
@@ -90,15 +86,11 @@ export const AuthProvider = ({ children }) => {
         permissions: response.permissions ?? session.permissions,
         admin_sections: response.admin_sections ?? session.admin_sections,
       }
-      
+
       localStorage.setItem(STORAGE_KEY, JSON.stringify(updatedSession))
       setSession(updatedSession)
-      
-      // Trigger reload signal if backend indicates to do so
-      if (response.reload) {
-        setReloadSignal(prev => prev + 1)
-      }
-      
+      setReloadSignal(prev => prev + 1)
+
       return { success: true, reload: response.reload, session: updatedSession }
     } catch (error) {
       console.error('Company switch failed:', error)
@@ -107,6 +99,7 @@ export const AuthProvider = ({ children }) => {
   }, [session])
 
   const logout = () => {
+    const token = readSession()?.token
     localStorage.removeItem(STORAGE_KEY)
     localStorage.removeItem(LAST_REFRESH_KEY)
     localStorage.removeItem('selectedCompany')
@@ -114,6 +107,8 @@ export const AuthProvider = ({ children }) => {
     localStorage.removeItem('currentCompany')
     localStorage.removeItem('currentBranch')
     setSession(null)
+    // Best-effort server-side token revocation
+    if (token) posApi.logout(token).catch(() => {})
   }
 
   const refreshSession = useCallback(async ({ force = false } = {}) => {

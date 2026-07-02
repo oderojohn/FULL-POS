@@ -66,5 +66,9 @@ def is_pos_admin(user):
     profile = get_pos_profile(user)
     return bool(
         user.is_superuser
-        or (profile and profile.role == UserProfile.ADMIN)
+        or (profile and profile.access_level in [
+            UserProfile.BRANCH_ADMIN,
+            UserProfile.COMPANY_ADMIN,
+            UserProfile.SUPER_ADMIN,
+        ])
     )

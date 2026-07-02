@@ -6,6 +6,7 @@ import {
 } from 'react-icons/fa'
 import { posApi } from '../api/posApi'
 import { useAuth } from '../auth/AuthContext'
+import { SkeletonTable, DotLoader } from '../components/LoadingKit'
 
 const money = (value) => `KES ${Number(value || 0).toLocaleString()}`
 const TABLE_PAGE_SIZE = 100
@@ -36,6 +37,23 @@ const formatApiError = (error) => {
 
 const InventoryModule = ({ section = 'Products' }) => {
   const { user, branch: authBranch, company: authCompany, company_branches: authBranches, reloadSignal } = useAuth()
+
+  // All accessible branches (company-scoped)
+  const accessibleBranches = React.useMemo(() => {
+    const list = authBranches?.length ? authBranches : authBranch ? [authBranch] : []
+    return list.filter((b) => b?.id)
+  }, [authBranches, authBranch])
+
+  // Active branch selection — defaults to authBranch, user can switch within company
+  const [selectedBranchId, setSelectedBranchId] = useState(null)
+  useEffect(() => {
+    if (authBranch?.id) setSelectedBranchId(authBranch.id)
+    else if (accessibleBranches.length) setSelectedBranchId(accessibleBranches[0].id)
+  }, [authBranch?.id])
+
+  const activeBranchId = selectedBranchId || authBranch?.id || accessibleBranches[0]?.id
+  const selectedBranch = accessibleBranches.find((b) => b.id === activeBranchId) || accessibleBranches[0]
+
   const [modal, setModal] = useState(null)
   const [modalDraft, setModalDraft] = useState({})
   const [branches, setBranches] = useState([])
@@ -56,15 +74,15 @@ const InventoryModule = ({ section = 'Products' }) => {
   const [adjustmentLogCount, setAdjustmentLogCount] = useState(0)
   const [auditLogPage, setAuditLogPage] = useState(1)
   const [message, setMessage] = useState('')
-  const [companies, setCompanies] = useState([])
-  const activeBranchId = authBranch?.id || branches[0]?.id
+  const [dataLoading, setDataLoading] = useState(true)
+  const [actionLoading, setActionLoading] = useState(false)
 
   const loadLiveData = async () => {
+    const branchId = activeBranchId
+    if (!branchId) { setMessage('No branch selected.'); setDataLoading(false); return }
+    setDataLoading(true)
     try {
-      const companyData = authCompany ? [authCompany] : []
-      const finalBranches = authBranches?.length ? authBranches : authBranch ? [authBranch] : []
-      const branchId = authBranch?.id || finalBranches[0]?.id
-      if (!branchId) throw new Error('No active branch is assigned to this user.')
+      const finalBranches = accessibleBranches.length ? accessibleBranches : authBranch ? [authBranch] : []
       const [categoryResponse, supplierResponse, productResponse, poResponse, stocktakeResponse, movementResponse, lowStockResponse] = await Promise.all([
         posApi.inventory.categories({ branch: branchId, page_size: CATEGORY_PAGE_SIZE }),
         posApi.inventory.suppliers({ branch: branchId, page_size: CATEGORY_PAGE_SIZE }),
@@ -81,7 +99,6 @@ const InventoryModule = ({ section = 'Products' }) => {
       const stocktakeRows = Array.isArray(stocktakeResponse.results) ? stocktakeResponse.results : Array.isArray(stocktakeResponse) ? stocktakeResponse : []
       const movementRows = Array.isArray(movementResponse.results) ? movementResponse.results : Array.isArray(movementResponse) ? movementResponse : []
       const lowStockData = Array.isArray(lowStockResponse.results) ? lowStockResponse.results : Array.isArray(lowStockResponse) ? lowStockResponse : []
-      setCompanies(companyData)
       setBranches(finalBranches)
       setCategories(categoryRows)
       setCategoryMeta({ count: categoryResponse.count || categoryRows.length, pageSize: CATEGORY_PAGE_SIZE })
@@ -107,18 +124,23 @@ const InventoryModule = ({ section = 'Products' }) => {
       setLowStockRows(lowStockData)
     } catch (error) {
       setMessage(formatApiError(error) || 'Backend unavailable. Inventory data could not be loaded.')
+    } finally {
+      setDataLoading(false)
     }
   }
 
+  // Reload when branch selection OR page changes
   useEffect(() => {
+    if (!activeBranchId) return
     loadLiveData()
     loadAdjustmentLogs()
-  }, [authBranch?.id, reloadSignal, productPage])
+  }, [activeBranchId, reloadSignal, productPage])
 
+  // Reset page when branch changes
   useEffect(() => {
-    if (!authBranch?.id) return
     setProductPage(1)
-  }, [authBranch?.id])
+    setStockProductPage(1)
+  }, [activeBranchId])
 
   useEffect(() => {
     if (!message) return undefined
@@ -302,9 +324,11 @@ setMessage(modal.data?.id ? 'Product updated.' : 'Product created.')
    }
 
   const loadAdjustmentLogs = () => {
+    const branchId = activeBranchId
     return posApi.auditLogs({
       module: 'inventory',
       action: 'adjust_stock',
+      ...(branchId ? { branch: branchId } : {}),
       page: auditLogPage,
       page_size: STOCK_PAGE_SIZE,
     }).then((data) => {
@@ -314,25 +338,48 @@ setMessage(modal.data?.id ? 'Product updated.' : 'Product created.')
       setAdjustmentLogCount(count)
       return count
     }).catch(() => {
-      // back-end audit-log filter not available yet — keep empty list
       return 0
     })
   }
 
 return (
     <div className="space-y-4">
-      <Header section={section} onAction={() => openModal(defaultModalFor(section))} />
+      <Header
+        section={section}
+        onAction={() => {
+          const base = defaultModalFor(section)
+          if (base.type === 'stocktake') {
+            openModal({ ...base, title: `Create Stocktake — ${selectedBranch?.name || 'Branch'}`, data: { branchName: selectedBranch?.name } })
+          } else {
+            openModal(base)
+          }
+        }}
+        branches={accessibleBranches}
+        selectedBranchId={activeBranchId}
+        onBranchChange={(id) => setSelectedBranchId(Number(id))}
+        company={authCompany}
+      />
       {message && <Toast message={message} onClose={() => setMessage('')} />}
 
-      {section === 'Products' && <ProductsView items={liveProducts} categories={categories} categoryMeta={categoryMeta} meta={productMeta} page={productPage} onPageChange={setProductPage} onCreate={() => openModal({ type: 'product', title: 'Create Product' })} onCreateCategory={() => openModal({ type: 'category', title: 'Create Category' })} onEdit={(product) => openModal({ type: 'product', title: product.name, data: product }, product)} onEditCategory={(category) => openModal({ type: 'category', title: category.name, data: category }, category)} />}
-      {section === 'Purchase Orders' && <PurchaseOrdersView purchaseOrders={purchaseOrders} onCreate={() => openModal({ type: 'po', title: 'Create Purchase Order' })} onDetail={(po) => openModal({ type: 'poDetail', title: po.po_no || 'PO Detail', data: po })} onCancel={(po) => openModal({ type: 'poCancel', title: 'Cancel Purchase Order', data: po }) } onUpdate={(po) => openModal({ type: 'po', title: 'Edit ' + (po.po_no || 'PO'), data: po }, { supplier: po.supplier, expected_at: po.expected_at, items: (po.items || []).filter((item) => item.is_active !== false) })} onDelete={(po) => openModal({ type: 'poDelete', title: 'Delete Purchase Order', data: po })} />}
-      {section === 'Goods Receiving' && <GoodsReceivingView purchaseOrders={purchaseOrders} onReceive={(po) => openModal({ type: 'receive', title: 'Confirm Goods Receiving' }, { purchase_order: po?.id })} />}
-      {section === 'Stock Management' && <StockManagementView items={liveProducts} lowStockRows={lowStockRows} movements={stockMovements} onAdjust={(product) => openModal({ type: 'adjust', title: `Adjust ${product.name}`, data: product }, { quantity_delta: 1, reason: 'Manual correction' })} stockProductPage={stockProductPage} onStockProductPageChange={setStockProductPage} stockMovementPage={stockMovementPage} onStockMovementPageChange={setStockMovementPage} adjustmentLogs={adjustmentLogs} adjustmentLogCount={adjustmentLogCount} auditLogPage={auditLogPage} onAuditLogPageChange={setAuditLogPage} />}
-      {section === 'Stocktake' && <StocktakeView sessions={stocktakes} onCreate={() => openModal({ type: 'stocktake', title: 'Create Stocktake Session' })} onCount={(session) => openModal({ type: 'countStocktake', title: session.session_no, data: session }, Object.fromEntries((session.items || []).map((item) => [`count_${item.id}`, item.counted_quantity])))} onApprove={(session) => openModal({ type: 'approveVariance', title: 'Approve ' + (session.session_no || 'Stocktake'), data: session }, { stocktake: session?.id })} />}
-      {section === 'Monthly Variance' && <MonthlyVarianceView sessions={stocktakes} onApprove={(session) => openModal({ type: 'approveVariance', title: 'Approve Final Reconciliation' }, { stocktake: session?.id })} />}
-      {section === 'Warehouses' && <WarehouseView products={liveProducts} branches={branches} onTransfer={() => openModal({ type: 'transfer', title: 'Transfer Stock' })} />}
-      {section === 'Suppliers' && <SuppliersView suppliers={suppliers} meta={supplierMeta} onCreate={() => openModal({ type: 'supplier', title: 'Create Supplier' })} onEdit={(supplier) => openModal({ type: 'supplier', title: supplier.name, data: supplier }, supplier)} />}
-      {section === 'Inventory Reports' && <ReportsView categories={categories} />}
+      {dataLoading && (
+        <div className="rounded-xl border border-slate-200 bg-white shadow-sm overflow-hidden">
+          <div className="px-5 py-3 border-b border-slate-100 flex items-center gap-2">
+            <div className="shimmer-bar rounded h-3.5 w-36" />
+            <div className="shimmer-bar rounded h-3.5 w-20 ml-auto" />
+          </div>
+          <SkeletonTable rows={9} cols={5} />
+        </div>
+      )}
+
+      {!dataLoading && section === 'Products' && <ProductsView items={liveProducts} categories={categories} categoryMeta={categoryMeta} meta={productMeta} page={productPage} onPageChange={setProductPage} onCreate={() => openModal({ type: 'product', title: 'Create Product' })} onCreateCategory={() => openModal({ type: 'category', title: 'Create Category' })} onEdit={(product) => openModal({ type: 'product', title: product.name, data: product }, product)} onEditCategory={(category) => openModal({ type: 'category', title: category.name, data: category }, category)} />}
+      {!dataLoading && section === 'Purchase Orders' && <PurchaseOrdersView purchaseOrders={purchaseOrders} onCreate={() => openModal({ type: 'po', title: 'Create Purchase Order' })} onDetail={(po) => openModal({ type: 'poDetail', title: po.po_no || 'PO Detail', data: po })} onCancel={(po) => openModal({ type: 'poCancel', title: 'Cancel Purchase Order', data: po }) } onUpdate={(po) => openModal({ type: 'po', title: 'Edit ' + (po.po_no || 'PO'), data: po }, { supplier: po.supplier, expected_at: po.expected_at, items: (po.items || []).filter((item) => item.is_active !== false) })} onDelete={(po) => openModal({ type: 'poDelete', title: 'Delete Purchase Order', data: po })} />}
+      {!dataLoading && section === 'Goods Receiving' && <GoodsReceivingView purchaseOrders={purchaseOrders} onReceive={(po) => openModal({ type: 'receive', title: 'Confirm Goods Receiving' }, { purchase_order: po?.id })} />}
+      {!dataLoading && section === 'Stock Management' && <StockManagementView items={liveProducts} lowStockRows={lowStockRows} movements={stockMovements} onAdjust={(product) => openModal({ type: 'adjust', title: `Adjust ${product.name}`, data: product }, { quantity_delta: 1, reason: 'Manual correction' })} stockProductPage={stockProductPage} onStockProductPageChange={setStockProductPage} stockMovementPage={stockMovementPage} onStockMovementPageChange={setStockMovementPage} adjustmentLogs={adjustmentLogs} adjustmentLogCount={adjustmentLogCount} auditLogPage={auditLogPage} onAuditLogPageChange={setAuditLogPage} branchId={activeBranchId} branchName={selectedBranch?.name} />}
+      {!dataLoading && section === 'Stocktake' && <StocktakeView sessions={stocktakes} selectedBranch={selectedBranch} onCreate={() => openModal({ type: 'stocktake', title: `Create Stocktake — ${selectedBranch?.name || 'Branch'}`, data: { branchName: selectedBranch?.name } })} onCount={(session) => openModal({ type: 'countStocktake', title: session.session_no, data: session }, Object.fromEntries((session.items || []).map((item) => [`count_${item.id}`, item.counted_quantity])))} onApprove={(session) => openModal({ type: 'approveVariance', title: 'Approve ' + (session.session_no || 'Stocktake'), data: session }, { stocktake: session?.id })} />}
+      {!dataLoading && section === 'Monthly Variance' && <MonthlyVarianceView sessions={stocktakes} onApprove={(session) => openModal({ type: 'approveVariance', title: 'Approve Final Reconciliation' }, { stocktake: session?.id })} />}
+      {!dataLoading && section === 'Warehouses' && <WarehouseView products={liveProducts} branches={branches} activeBranchId={activeBranchId} onTransfer={() => openModal({ type: 'transfer', title: 'Transfer Stock' })} />}
+      {!dataLoading && section === 'Suppliers' && <SuppliersView suppliers={suppliers} meta={supplierMeta} onCreate={() => openModal({ type: 'supplier', title: 'Create Supplier' })} onEdit={(supplier) => openModal({ type: 'supplier', title: supplier.name, data: supplier }, supplier)} />}
+      {!dataLoading && section === 'Inventory Reports' && <ReportsView categories={categories} />}
 
       {modal && <InventoryModal modal={modal} draft={modalDraft} setDraft={setModalDraft} products={liveProducts} categories={categories} suppliers={suppliers} purchaseOrders={purchaseOrders} stocktakes={stocktakes} onClose={() => setModal(null)} onConfirm={confirmModal} onDelete={deleteModalItem} />}
     </div>
@@ -350,16 +397,56 @@ const defaultModalFor = (section) => {
   return { type: 'export', title: 'Export Inventory Report' }
 }
 
-const Header = ({ section, onAction }) => (
-  <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-3">
-    <div>
-      <h1 className="text-xl sm:text-2xl font-bold text-slate-900">Inventory / {section}</h1>
-      <p className="text-xs sm:text-sm text-slate-500 mt-1">Control products, purchases, receiving, stock levels, stocktake, variance, warehouses, suppliers, and inventory reports.</p>
+const Header = ({ section, onAction, branches = [], selectedBranchId, onBranchChange, company }) => (
+  <div className="space-y-3">
+    <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-3">
+      <div>
+        <h1 className="text-xl sm:text-2xl font-bold text-slate-900">Inventory / {section}</h1>
+        <p className="text-xs sm:text-sm text-slate-500 mt-1">Control products, purchases, receiving, stock levels, stocktake, variance, warehouses, suppliers, and inventory reports.</p>
+      </div>
+      <button onClick={onAction} className="inline-flex items-center justify-center px-4 py-2 bg-slate-900 text-white rounded-lg text-sm hover:bg-slate-800">
+        <FaPlus className="mr-2" />
+        New Action
+      </button>
     </div>
-    <button onClick={onAction} className="inline-flex items-center justify-center px-4 py-2 bg-slate-900 text-white rounded-lg text-sm hover:bg-slate-800">
-      <FaPlus className="mr-2" />
-      New Action
-    </button>
+
+    {/* Branch / company context bar */}
+    <div className="flex flex-wrap items-center gap-3 rounded-lg border border-slate-200 bg-white px-4 py-2.5 shadow-sm">
+      {company && (
+        <div className="flex items-center gap-2 shrink-0">
+          <span className="flex h-6 w-6 items-center justify-center rounded bg-emerald-600 text-white text-[10px] font-black">
+            {(company.name || 'C').charAt(0).toUpperCase()}
+          </span>
+          <span className="text-xs font-bold text-slate-700">{company.name || 'Company'}</span>
+        </div>
+      )}
+      {company && branches.length > 0 && <span className="text-slate-300 text-sm">/</span>}
+      {branches.length > 1 ? (
+        <label className="flex items-center gap-2">
+          <FaWarehouse className="text-emerald-600 text-xs shrink-0" />
+          <span className="text-xs font-semibold text-slate-500">Branch:</span>
+          <select
+            value={selectedBranchId || ''}
+            onChange={(e) => onBranchChange(e.target.value)}
+            className="border border-slate-300 rounded-lg px-2 py-1 text-xs font-semibold text-slate-800 bg-white focus:border-emerald-500 outline-none"
+          >
+            {branches.map((b) => (
+              <option key={b.id} value={b.id}>{b.name}{b.location ? ` — ${b.location}` : ''}</option>
+            ))}
+          </select>
+        </label>
+      ) : branches.length === 1 ? (
+        <div className="flex items-center gap-2">
+          <FaWarehouse className="text-emerald-600 text-xs" />
+          <span className="text-xs font-semibold text-slate-700">{branches[0].name}</span>
+          {branches[0].location && <span className="text-xs text-slate-400">— {branches[0].location}</span>}
+        </div>
+      ) : null}
+      <div className="ml-auto flex items-center gap-1.5">
+        <div className="h-2 w-2 rounded-full bg-emerald-500" />
+        <span className="text-[11px] font-semibold text-slate-500">Live data</span>
+      </div>
+    </div>
   </div>
 )
 
@@ -564,22 +651,55 @@ const PurchaseOrdersView = ({ purchaseOrders = [], onCreate, onDetail, onCancel,
 }
 
 const GoodsReceivingView = ({ purchaseOrders = [], onReceive }) => {
-  const openOrders = Array.isArray(purchaseOrders) ? purchaseOrders.filter((po) => po.status !== 'received' && po.status !== 'cancelled') : []
+  const [filter, setFilter] = React.useState('open')
+  const allOrders = Array.isArray(purchaseOrders) ? purchaseOrders : []
+  const openCount = allOrders.filter((po) => po.status !== 'received' && po.status !== 'cancelled').length
+  const receivedCount = allOrders.filter((po) => po.status === 'received').length
+  const displayed = filter === 'open'
+    ? allOrders.filter((po) => po.status !== 'received' && po.status !== 'cancelled')
+    : filter === 'received'
+    ? allOrders.filter((po) => po.status === 'received')
+    : allOrders
 
   return (
-    <Panel title="Goods Receiving Note" icon={FaClipboardCheck}>
-      <div className="p-3 border-b border-slate-200 grid grid-cols-1 sm:grid-cols-2 gap-2">
-        <div className="px-3 py-2 bg-amber-50 text-amber-700 rounded text-xs font-semibold">Partial delivery support enabled</div>
-        <div className="px-3 py-2 bg-blue-50 text-blue-700 rounded text-xs font-semibold">Stock update preview before confirmation</div>
+    <Panel title="Goods Receiving" icon={FaClipboardCheck}>
+      {/* Tabs */}
+      <div className="flex flex-wrap items-center gap-2 border-b border-slate-100 bg-slate-50 px-4 py-2.5">
+        {[
+          { key: 'open', label: `Pending (${openCount})` },
+          { key: 'received', label: `Received History (${receivedCount})` },
+          { key: 'all', label: `All (${allOrders.length})` },
+        ].map((opt) => (
+          <button key={opt.key} onClick={() => setFilter(opt.key)}
+            className={`h-7 rounded-full px-3 text-xs font-semibold transition-colors ${filter === opt.key ? 'bg-emerald-600 text-white' : 'border border-slate-200 bg-white text-slate-600 hover:bg-slate-100'}`}>
+            {opt.label}
+          </button>
+        ))}
+        <div className="ml-auto flex gap-2">
+          <span className="rounded px-2 py-1 text-[11px] font-semibold bg-amber-50 text-amber-700">Partial delivery supported</span>
+          <span className="rounded px-2 py-1 text-[11px] font-semibold bg-blue-50 text-blue-700">Preview before confirm</span>
+        </div>
       </div>
+
+      {displayed.length === 0 ? (
+        <div className="flex flex-col items-center justify-center py-12 text-sm text-slate-400">
+          <FaClipboardCheck className="mb-2 text-3xl text-slate-300" />
+          <p>{filter === 'open' ? 'No pending purchase orders waiting for goods receiving.' : filter === 'received' ? 'No received orders in history.' : 'No purchase orders found.'}</p>
+        </div>
+      ) : (
       <DenseTable
         columns={['PO Number', 'Supplier', 'Items', 'Total Ordered', 'Received', 'Remaining', 'Status', 'Action']}
-        rows={openOrders.map((po) => {
+        rows={displayed.map((po) => {
           const itemCount = po.items?.length || 0
           const totalOrdered = (po.items || []).reduce((s, i) => s + Number(i.ordered_quantity || 0), 0)
           const totalReceived = (po.items || []).reduce((s, i) => s + Number(i.received_quantity || 0), 0)
           const remaining = Math.max(0, totalOrdered - totalReceived)
-          const status = remaining === 0 ? 'Completed' : totalReceived > 0 ? 'Partial' : 'Open'
+          const isCompleted = po.status === 'received' || remaining === 0
+          const isCancelled = po.status === 'cancelled'
+          const isPartial = totalReceived > 0 && !isCompleted && !isCancelled
+          const statusLabel = po.status === 'received' ? 'Received' : isCancelled ? 'Cancelled' : isPartial ? 'Partial' : 'Open'
+          const statusTone = po.status === 'received' ? 'emerald' : isCancelled ? 'red' : isPartial ? 'amber' : 'slate'
+          const canReceive = !isCompleted && !isCancelled
           return [
             po.po_no,
             po.supplier,
@@ -587,14 +707,17 @@ const GoodsReceivingView = ({ purchaseOrders = [], onReceive }) => {
             totalOrdered,
             totalReceived,
             remaining,
-            <Badge>{status}</Badge>,
-            <button onClick={(event) => { event.stopPropagation(); onReceive(po) }} className="px-3 py-1.5 bg-emerald-600 text-white rounded text-xs whitespace-nowrap font-semibold">Receive</button>,
+            <Badge tone={statusTone}>{statusLabel}</Badge>,
+            canReceive
+              ? <button onClick={(e) => { e.stopPropagation(); onReceive(po) }} className="px-3 py-1.5 bg-emerald-600 text-white rounded text-xs whitespace-nowrap font-semibold hover:bg-emerald-700">Receive</button>
+              : <span className="text-[11px] font-semibold text-slate-400">{po.status === 'received' ? 'Completed' : 'Cancelled'}</span>,
           ]
         })}
-        rowData={openOrders}
-        onRowClick={onReceive}
+        rowData={displayed}
+        onRowClick={(po) => { if (po.status !== 'received' && po.status !== 'cancelled') onReceive(po) }}
         numericColumns={[3, 4, 5]}
       />
+      )}
     </Panel>
   )
 }
@@ -643,41 +766,325 @@ const AdjustmentAuditTable = ({ logs = [], count = 0, page, onPageChange, pageSi
   )
 }
 
-const StockManagementView = ({ items, lowStockRows, movements: liveMovements, onAdjust, stockProductPage, onStockProductPageChange, stockMovementPage, onStockMovementPageChange, adjustmentLogs, adjustmentLogCount, auditLogPage, onAuditLogPageChange }) => {
+// ── Product History Panel ─────────────────────────────────────────────────────
+const HISTORY_PERIODS = [
+  { key: 'all', label: 'All time' },
+  { key: 'today', label: 'Today' },
+  { key: '7days', label: '7 days' },
+  { key: '30days', label: '30 days' },
+  { key: '90days', label: '90 days' },
+]
+
+const historyPeriodParams = (key) => {
+  const today = new Date()
+  const iso = (d) => d.toISOString().slice(0, 10)
+  if (key === 'today') return { date_from: iso(today), date_to: iso(today) }
+  if (key === '7days') { const d = new Date(today); d.setDate(d.getDate() - 6); return { date_from: iso(d), date_to: iso(today) } }
+  if (key === '30days') { const d = new Date(today); d.setDate(d.getDate() - 29); return { date_from: iso(d), date_to: iso(today) } }
+  if (key === '90days') { const d = new Date(today); d.setDate(d.getDate() - 89); return { date_from: iso(d), date_to: iso(today) } }
+  return {}
+}
+
+const REASON_LABELS = {
+  sale: { label: 'Sale', tone: 'bg-red-100 text-red-700' },
+  void: { label: 'Void', tone: 'bg-slate-100 text-slate-600' },
+  return: { label: 'Return', tone: 'bg-amber-100 text-amber-700' },
+  adjustment: { label: 'Adjustment', tone: 'bg-blue-100 text-blue-700' },
+  receive: { label: 'Received', tone: 'bg-emerald-100 text-emerald-700' },
+  hold_release: { label: 'Hold Rel.', tone: 'bg-violet-100 text-violet-700' },
+}
+
+const ProductHistoryPanel = ({ items = [], branchId }) => {
+  const [selectedProduct, setSelectedProduct] = useState('')
+  const [period, setPeriod] = useState('30days')
+  const [reasonFilter, setReasonFilter] = useState('')
+  const [historyRows, setHistoryRows] = useState([])
+  const [historyCount, setHistoryCount] = useState(0)
+  const [historyPage, setHistoryPage] = useState(1)
+  const [loading, setLoading] = useState(false)
+  const [search, setSearch] = useState('')
+  const pageSize = 50
+
+  const load = async (page = 1) => {
+    if (!selectedProduct || !branchId) return
+    setLoading(true)
+    try {
+      const params = {
+        branch: branchId,
+        product: selectedProduct,
+        page,
+        page_size: pageSize,
+        ...(reasonFilter ? { reason: reasonFilter } : {}),
+        ...historyPeriodParams(period),
+      }
+      const data = await posApi.inventory.stockMovements(params)
+      const rows = Array.isArray(data?.results) ? data.results : Array.isArray(data) ? data : []
+      setHistoryRows(rows)
+      setHistoryCount(data?.count || rows.length)
+      setHistoryPage(page)
+    } catch {
+      setHistoryRows([])
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  useEffect(() => { if (selectedProduct) load(1) }, [selectedProduct, period, reasonFilter])
+
+  // Build running balance (oldest→newest, then reverse for display)
+  const rowsWithBalance = React.useMemo(() => {
+    const sorted = [...historyRows].reverse()
+    let bal = null
+    const result = sorted.map((row) => {
+      if (bal === null) {
+        const prod = items.find((p) => String(p.id) === String(row.product))
+        // Approximate current stock from the product list
+        bal = prod ? prod.stock : 0
+      }
+      const after = bal
+      bal -= Number(row.quantity_delta) // walk backwards
+      return { ...row, balance_after: after }
+    })
+    return result.reverse()
+  }, [historyRows, items])
+
+  const filteredProducts = items.filter((p) =>
+    !search || p.name.toLowerCase().includes(search.toLowerCase()) || (p.sku || '').toLowerCase().includes(search.toLowerCase())
+  )
+  const totalPages = Math.max(1, Math.ceil(historyCount / pageSize))
+
+  return (
+    <Panel title="Product History" icon={FaChartLine}>
+      {/* Controls row */}
+      <div className="p-3 border-b border-slate-200 grid grid-cols-1 sm:grid-cols-[1fr_1fr_auto_auto] gap-2 items-end">
+        <label className="block">
+          <span className="text-[11px] font-bold text-slate-500 uppercase">Product</span>
+          <div className="flex gap-1 mt-1">
+            <div className="relative flex-1">
+              <FaSearch className="absolute left-2.5 top-2.5 text-slate-400 text-xs" />
+              <input
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
+                placeholder="Search product…"
+                className="w-full pl-8 pr-3 py-2 border border-slate-300 rounded-l-lg text-xs"
+              />
+            </div>
+            <select
+              value={selectedProduct}
+              onChange={(e) => setSelectedProduct(e.target.value)}
+              className="flex-1 px-2 py-2 border border-l-0 border-slate-300 rounded-r-lg text-xs"
+            >
+              <option value="">Select…</option>
+              {filteredProducts.map((p) => (
+                <option key={p.id} value={p.id}>{p.name} ({p.sku})</option>
+              ))}
+            </select>
+          </div>
+        </label>
+        <label className="block">
+          <span className="text-[11px] font-bold text-slate-500 uppercase">Event type</span>
+          <select
+            value={reasonFilter}
+            onChange={(e) => setReasonFilter(e.target.value)}
+            className="mt-1 w-full px-3 py-2 border border-slate-300 rounded-lg text-xs"
+          >
+            <option value="">All events</option>
+            <option value="sale">Sales</option>
+            <option value="receive">Receiving</option>
+            <option value="adjustment">Adjustments</option>
+            <option value="return">Returns</option>
+            <option value="void">Voids</option>
+          </select>
+        </label>
+        <div>
+          <span className="text-[11px] font-bold text-slate-500 uppercase block mb-1">Period</span>
+          <div className="flex gap-1 bg-slate-100 rounded-lg p-0.5">
+            {HISTORY_PERIODS.map(({ key, label }) => (
+              <button
+                key={key}
+                type="button"
+                onClick={() => setPeriod(key)}
+                className={`px-2 py-1.5 rounded-md text-[10px] font-semibold transition-colors whitespace-nowrap ${period === key ? 'bg-white shadow-sm text-slate-900' : 'text-slate-500 hover:text-slate-700'}`}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+        </div>
+        <button
+          type="button"
+          onClick={() => load(1)}
+          disabled={!selectedProduct || loading}
+          className="px-4 py-2 bg-emerald-600 text-white rounded-lg text-xs font-semibold disabled:opacity-40"
+        >
+          {loading ? 'Loading…' : 'Load'}
+        </button>
+      </div>
+
+      {/* Selected product info strip */}
+      {selectedProduct && (() => {
+        const prod = items.find((p) => String(p.id) === String(selectedProduct))
+        if (!prod) return null
+        return (
+          <div className="px-4 py-2.5 border-b border-slate-100 flex flex-wrap gap-4 bg-slate-50 text-xs">
+            <span className="font-bold text-slate-900 text-sm">{prod.name}</span>
+            <span className="text-slate-500">SKU: <strong className="text-slate-700">{prod.sku}</strong></span>
+            <span className="text-slate-500">Current stock: <strong className="text-slate-900">{prod.stock} units</strong></span>
+            <span className="text-slate-500">Cost: <strong>{money(prod.cost)}</strong></span>
+            <span className="text-slate-500">Retail: <strong>{money(prod.price)}</strong></span>
+          </div>
+        )
+      })()}
+
+      {/* Empty state */}
+      {!selectedProduct && (
+        <div className="p-8 text-center text-sm text-slate-400">Select a product to view its full stock history — sales, receiving, and adjustments.</div>
+      )}
+
+      {/* History timeline */}
+      {selectedProduct && !loading && rowsWithBalance.length === 0 && (
+        <div className="p-6 text-center text-sm text-slate-400">No history found for this product in the selected period.</div>
+      )}
+
+      {loading && (
+        <div className="p-6 text-center text-sm text-slate-400">Loading history…</div>
+      )}
+
+      {rowsWithBalance.length > 0 && (
+        <>
+          <div className="overflow-x-auto">
+            <table className="w-full text-[11px] border-collapse">
+              <thead className="bg-slate-50 sticky top-0">
+                <tr>
+                  {['Date & Time', 'Event', 'Reference', 'User', 'Qty Change', 'Stock Balance', 'Notes'].map((col, i) => (
+                    <th key={col} className={`px-3 py-2.5 text-left font-bold uppercase text-slate-500 tracking-wide border-b border-slate-200 ${i >= 4 && i <= 5 ? 'text-right' : ''}`}>{col}</th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-100">
+                {rowsWithBalance.map((row, idx) => {
+                  const r = REASON_LABELS[row.reason] || { label: row.reason, tone: 'bg-slate-100 text-slate-600' }
+                  const delta = Number(row.quantity_delta)
+                  const isIn = delta > 0
+                  const ref = row.reference || '—'
+                  return (
+                    <tr key={row.id || idx} className={idx % 2 ? 'bg-slate-50/50' : 'bg-white'}>
+                      <td className="px-3 py-2.5 whitespace-nowrap font-mono text-slate-500">
+                        {new Date(row.created_at).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}
+                      </td>
+                      <td className="px-3 py-2.5">
+                        <span className={`px-2 py-0.5 rounded-full font-semibold ${r.tone}`}>{r.label}</span>
+                      </td>
+                      <td className="px-3 py-2.5">
+                        <span className="font-mono font-semibold text-slate-800">{ref}</span>
+                      </td>
+                      <td className="px-3 py-2.5 text-slate-600">
+                        {row.user_display || row.user || 'System'}
+                      </td>
+                      <td className={`px-3 py-2.5 text-right font-bold tabular-nums ${isIn ? 'text-emerald-600' : 'text-red-600'}`}>
+                        {isIn ? '+' : ''}{delta}
+                      </td>
+                      <td className="px-3 py-2.5 text-right font-bold tabular-nums text-slate-900">
+                        {row.balance_after}
+                      </td>
+                      <td className="px-3 py-2.5 text-slate-500 max-w-[160px] truncate">
+                        {row.notes || '—'}
+                      </td>
+                    </tr>
+                  )
+                })}
+              </tbody>
+            </table>
+          </div>
+          {/* Pagination */}
+          <div className="flex items-center justify-between px-3 py-2 border-t border-slate-200 text-[11px] text-slate-500">
+            <span>{historyCount.toLocaleString()} events total</span>
+            <div className="flex items-center gap-1">
+              <button type="button" disabled={historyPage <= 1} onClick={() => load(historyPage - 1)} className="px-2 py-1 rounded bg-white border border-slate-200 disabled:opacity-40 font-semibold">Previous</button>
+              <span className="px-2">Page {historyPage} of {totalPages}</span>
+              <button type="button" disabled={historyPage >= totalPages} onClick={() => load(historyPage + 1)} className="px-2 py-1 rounded bg-white border border-slate-200 disabled:opacity-40 font-semibold">Next</button>
+            </div>
+          </div>
+        </>
+      )}
+    </Panel>
+  )
+}
+
+const StockManagementView = ({ items, lowStockRows, movements: liveMovements, onAdjust, stockProductPage, onStockProductPageChange, stockMovementPage, onStockMovementPageChange, adjustmentLogs, adjustmentLogCount, auditLogPage, onAuditLogPageChange, branchId, branchName }) => {
   const totalStock = items ? items.length : 0
   const lowStock = lowStockRows ? lowStockRows.length : 0
   const totalMovements = liveMovements ? liveMovements.length : 0
-  const totalAdjustments = typeof adjustmentLogCount === 'number' && adjustmentLogCount > 0 ? adjustmentLogCount : 0
 
   const stockProductPageCount = Math.max(1, Math.ceil(totalStock / STOCK_PAGE_SIZE))
   const safeStockProductPage = Math.min(stockProductPage || 1, stockProductPageCount)
   const visibleStock = Array.isArray(items) ? items.slice((safeStockProductPage - 1) * STOCK_PAGE_SIZE, safeStockProductPage * STOCK_PAGE_SIZE) : []
 
-  const movementPageCount = Math.max(1, Math.ceil(totalMovements / STOCK_PAGE_SIZE))
-  const safeMovementPage = Math.min(stockMovementPage || 1, movementPageCount)
-  const visibleMovements = Array.isArray(liveMovements) ? liveMovements.slice((safeMovementPage - 1) * STOCK_PAGE_SIZE, safeMovementPage * STOCK_PAGE_SIZE) : []
+  // Local filters for stock overview
+  const [stockSearch, setStockSearch] = useState('')
+  const [stockStatusFilter, setStockStatusFilter] = useState('')
+  const filteredStock = visibleStock.filter((p) => {
+    const matchSearch = !stockSearch || p.name.toLowerCase().includes(stockSearch.toLowerCase()) || (p.sku || '').toLowerCase().includes(stockSearch.toLowerCase())
+    const matchStatus = !stockStatusFilter || (stockStatusFilter === 'low' && p.stock <= p.reorderPoint && p.stock > 0) || (stockStatusFilter === 'out' && p.stock === 0) || (stockStatusFilter === 'ok' && p.stock > p.reorderPoint)
+    return matchSearch && matchStatus
+  })
 
   return (
     <div className="space-y-4">
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+      <div className="grid grid-cols-1 md:grid-cols-4 gap-3">
         <Metric label="Current SKUs" value={totalStock.toLocaleString()} />
-        <Metric label="Low Stock Alerts" value={lowStock.toLocaleString()} />
-        <Metric label="Stock Movements" value={totalMovements.toLocaleString()} />
+        <Metric label="Low Stock" value={lowStock.toLocaleString()} />
+        <Metric label="Out of Stock" value={(items || []).filter((p) => p.stock === 0).length.toLocaleString()} />
+        <Metric label="Healthy Stock" value={(items || []).filter((p) => p.stock > p.reorderPoint).length.toLocaleString()} />
       </div>
-      <Panel title="Stock Overview" icon={FaWarehouse}>
+
+      <Panel title={`Stock Overview${branchName ? ` — ${branchName}` : ''}`} icon={FaWarehouse}>
+        {/* Filters */}
+        <div className="p-3 border-b border-slate-200 flex flex-col sm:flex-row gap-2">
+          <div className="relative flex-1">
+            <FaSearch className="absolute left-3 top-2.5 text-slate-400 text-xs" />
+            <input
+              value={stockSearch}
+              onChange={(e) => setStockSearch(e.target.value)}
+              placeholder="Search product or SKU…"
+              className="w-full pl-8 pr-3 py-2 border border-slate-300 rounded-lg text-xs"
+            />
+          </div>
+          <select
+            value={stockStatusFilter}
+            onChange={(e) => setStockStatusFilter(e.target.value)}
+            className="px-3 py-2 border border-slate-300 rounded-lg text-xs"
+          >
+            <option value="">All stock levels</option>
+            <option value="ok">Healthy</option>
+            <option value="low">Low stock</option>
+            <option value="out">Out of stock</option>
+          </select>
+        </div>
         {totalStock === 0 ? (
           <div className="p-4 text-sm text-slate-600">No stock data available.</div>
         ) : (
           <DenseTable
-            columns={['Product', 'Current Stock', 'Warehouse / Location', 'Reorder Alert', 'Action']}
-            rows={visibleStock.map((product) => [product.name, product.stock, product.branch || 'Main Branch', product.stock <= product.reorderPoint ? <span className="text-red-600 font-bold">Reorder now</span> : 'Healthy', <button onClick={(event) => { event.stopPropagation(); onAdjust(product) }} className="px-2 py-1 bg-slate-100 rounded">Adjust</button>])}
-            rowData={visibleStock}
+            columns={['Product', 'SKU', 'Current Stock', 'Reorder Point', 'Status', 'Action']}
+            rows={filteredStock.map((product) => [
+              product.name,
+              product.sku,
+              product.stock,
+              product.reorderPoint,
+              product.stock === 0
+                ? <span className="px-2 py-0.5 rounded-full bg-red-100 text-red-700 text-[10px] font-bold">Out</span>
+                : product.stock <= product.reorderPoint
+                  ? <span className="px-2 py-0.5 rounded-full bg-amber-100 text-amber-700 text-[10px] font-bold">Low</span>
+                  : <span className="px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-700 text-[10px] font-bold">OK</span>,
+              <button onClick={(event) => { event.stopPropagation(); onAdjust(product) }} className="px-2 py-1 bg-slate-100 rounded text-xs">Adjust</button>,
+            ])}
+            rowData={filteredStock}
             onRowClick={onAdjust}
-            numericColumns={[1]}
+            numericColumns={[2, 3]}
           />
         )}
         <div className="flex items-center justify-between px-3 py-2 border-t border-slate-200 text-[11px] text-slate-500">
-          <span>Showing {(safeStockProductPage - 1) * STOCK_PAGE_SIZE + 1} – {Math.min(safeStockProductPage * STOCK_PAGE_SIZE, totalStock)} of {totalStock} SKUs</span>
+          <span>Showing {filteredStock.length} of {totalStock} SKUs (page {safeStockProductPage})</span>
           <div className="flex items-center gap-1">
             <button type="button" disabled={safeStockProductPage <= 1} onClick={() => onStockProductPageChange(safeStockProductPage - 1)} className="px-2 py-1 rounded bg-white disabled:opacity-40 font-semibold">Previous</button>
             <span>Page {safeStockProductPage} of {stockProductPageCount}</span>
@@ -685,33 +1092,16 @@ const StockManagementView = ({ items, lowStockRows, movements: liveMovements, on
           </div>
         </div>
       </Panel>
-      <Panel title="Stock Movement History" icon={FaExchangeAlt}>
-        {!totalMovements ? (
-          <div className="p-4 text-sm text-slate-600">No stock movements recorded yet. Adjustments and purchases will appear here.</div>
-        ) : (
-          <>
-            <DenseTable
-              columns={['Product', 'Type', 'Qty', 'User', 'Timestamp', 'Location']}
-              rows={visibleMovements.map((row) => [row.product || row.product_name, row.type || row.reason, row.qty || row.quantity_delta, row.user || 'System', row.time || new Date(row.created_at).toLocaleString(), row.location || 'Main Branch'])}
-              numericColumns={[2]}
-            />
-            <div className="flex items-center justify-between px-3 py-2 border-t border-slate-200 text-[11px] text-slate-500">
-              <span>Showing {(safeMovementPage - 1) * STOCK_PAGE_SIZE + 1} – {Math.min(safeMovementPage * STOCK_PAGE_SIZE, totalMovements)} of {totalMovements} events</span>
-              <div className="flex items-center gap-1">
-                <button type="button" disabled={safeMovementPage <= 1} onClick={() => onStockMovementPageChange(safeMovementPage - 1)} className="px-2 py-1 rounded bg-white disabled:opacity-40 font-semibold">Previous</button>
-                <span>Page {safeMovementPage} of {movementPageCount}</span>
-                <button type="button" disabled={safeMovementPage >= movementPageCount} onClick={() => onStockMovementPageChange(safeMovementPage + 1)} className="px-2 py-1 rounded bg-white disabled:opacity-40 font-semibold">Next</button>
-              </div>
-            </div>
-          </>
-        )}
-      </Panel>
+
+      {/* Product History — main new feature */}
+      <ProductHistoryPanel items={items || []} branchId={branchId} />
+
       <AdjustmentAuditTable logs={adjustmentLogs} count={adjustmentLogCount} page={auditLogPage} onPageChange={onAuditLogPageChange} />
     </div>
   )
 }
 
-const StocktakeView = ({ sessions = [], onCreate, onCount, onApprove }) => {
+const StocktakeView = ({ sessions = [], selectedBranch, onCreate, onCount, onApprove }) => {
   const statusStyle = (s) => {
     const t = (s || '').toLowerCase()
     return t === 'approved'
@@ -726,79 +1116,129 @@ const StocktakeView = ({ sessions = [], onCreate, onCount, onApprove }) => {
   const totalVariance = (items = []) =>
     items.reduce((sum, item) => sum + (Number(item.counted_quantity || 0) - Number(item.system_quantity || 0)), 0)
   const approvedCount = sessions.filter((s) => s.status === 'approved').length
-  const openSessions = sessions.filter((s) => s.status !== 'approved')
+  const openSessions = sessions.filter((s) => s.status !== 'approved' && s.status !== 'cancelled')
+  const branchLabel = (row) => row.branch_name || row.branch_code || `Branch #${row.branch || '—'}`
 
   return (
     <div className="space-y-4">
-      <Panel title="Stocktake Sessions" icon={FaClipboardCheck} action={<button onClick={onCreate} className="px-3 py-1.5 bg-emerald-600 text-white rounded text-xs">Create Session</button>}>
+      {/* Active branch context */}
+      {selectedBranch && (
+        <div className="flex items-center gap-3 rounded-lg border border-emerald-200 bg-emerald-50 px-4 py-2.5 text-sm">
+          <FaClipboardCheck className="text-emerald-600 shrink-0" />
+          <span className="font-semibold text-emerald-800">
+            Stocktake sessions for <strong>{selectedBranch.name}</strong>
+            {selectedBranch.location ? ` — ${selectedBranch.location}` : ''}
+          </span>
+          <span className="ml-auto text-xs text-emerald-600">Switch branch via the selector above to view another branch.</span>
+        </div>
+      )}
+
+      <Panel
+        title={`Stocktake Sessions${selectedBranch ? ` — ${selectedBranch.name}` : ''}`}
+        icon={FaClipboardCheck}
+        action={<button onClick={onCreate} className="px-3 py-1.5 bg-emerald-600 text-white rounded text-xs font-semibold">Create Session</button>}
+      >
         {!sessions.length ? (
-          <div className="p-4 text-sm text-slate-500 text-center">No stocktake sessions yet. Click <strong>Create Session</strong> to start one.</div>
+          <div className="p-6 text-sm text-slate-500 text-center">
+            No stocktake sessions for {selectedBranch?.name || 'this branch'} yet. Click <strong>Create Session</strong> to start one.
+          </div>
         ) : (
           <DenseTable
-            columns={['Session', 'Branch', 'Status', 'Items', 'Variance Qty', 'Created', 'Action']}
+            columns={['Session No.', 'Branch', 'Status', 'Created By', 'Items', 'Net Variance', 'Date', 'Action']}
             rows={sessions.map((row) => {
               const items = row.items || []
               const v = totalVariance(items)
               const editable = isEditable(row)
               return [
-                row.session_no,
-                row.branch_name || row.branch?.name || row.branch_display || `#${row.branch || '—'}`,
-                <span className={`px-2 py-1 rounded text-xs font-semibold border ${statusStyle(row.status)}`}>{row.status || 'open'}</span>,
+                <span className="font-mono font-semibold text-slate-900">{row.session_no}</span>,
+                <span className="font-semibold text-slate-700">{branchLabel(row)}</span>,
+                <span className={`px-2 py-0.5 rounded-full text-xs font-bold border ${statusStyle(row.status)}`}>{row.status || 'open'}</span>,
+                row.created_by_name || '—',
                 items.length,
-                <span className={`font-semibold ${v < 0 ? 'text-red-600' : v > 0 ? 'text-emerald-600' : 'text-slate-600'}`}>{v > 0 ? '+' : ''}{v}</span>,
-                row.created_at ? new Date(row.created_at).toLocaleDateString() : '—',
+                <span className={`font-bold tabular-nums ${v < 0 ? 'text-red-600' : v > 0 ? 'text-emerald-600' : 'text-slate-500'}`}>{v > 0 ? '+' : ''}{v}</span>,
+                row.created_at ? new Date(row.created_at).toLocaleDateString(undefined, { day: '2-digit', month: 'short', year: 'numeric' }) : '—',
                 <div className="flex items-center gap-1" onClick={(e) => e.stopPropagation()}>
-                  <button onClick={(e) => { e.stopPropagation(); onCount(row) }} disabled={!editable} title={editable ? '' : 'Session is locked — cannot be edited'} className={`px-2 py-1 rounded text-xs font-semibold ${editable ? 'bg-slate-100 hover:bg-slate-200' : 'bg-slate-50 text-slate-300 cursor-not-allowed'}`}>Count</button>
+                  <button
+                    onClick={(e) => { e.stopPropagation(); onCount(row) }}
+                    disabled={!editable}
+                    title={editable ? 'Enter counts' : 'Session is locked'}
+                    className={`px-2 py-1 rounded text-xs font-semibold ${editable ? 'bg-blue-50 text-blue-700 hover:bg-blue-100' : 'bg-slate-50 text-slate-300 cursor-not-allowed'}`}
+                  >Count</button>
                   {editable && (
-                    <button onClick={(e) => { e.stopPropagation(); onApprove && onApprove(row) }} className="px-2 py-1 bg-emerald-50 text-emerald-700 rounded text-xs font-semibold">Approve</button>
+                    <button onClick={(e) => { e.stopPropagation(); onApprove && onApprove(row) }} className="px-2 py-1 bg-emerald-50 text-emerald-700 rounded text-xs font-semibold hover:bg-emerald-100">Approve</button>
                   )}
                 </div>,
               ]
             })}
             rowData={sessions}
             onRowClick={(row) => isEditable(row) && onCount(row)}
-            numericColumns={[3, 4]}
+            numericColumns={[4, 5]}
           />
         )}
         <div className="flex items-center justify-between px-3 py-2 border-t border-slate-200 text-[11px] text-slate-500">
-          <span>{sessions.length} session{sessions.length !== 1 ? 's' : ''} · {approvedCount} approved · {openSessions.length} pending</span>
+          <span>
+            {sessions.length} session{sessions.length !== 1 ? 's' : ''} ·
+            {' '}<span className="text-emerald-600 font-semibold">{approvedCount} approved</span> ·
+            {' '}<span className="text-amber-600 font-semibold">{openSessions.length} pending</span>
+          </span>
         </div>
       </Panel>
 
+      {/* Counting panel — always shows the first open session for quick access */}
       {openSessions.length > 0 && (
-        <Panel title="Mobile Stock Counting" icon={FaBarcode}>
+        <Panel title={`Count Sheet — ${openSessions[0].session_no} (${branchLabel(openSessions[0])})`} icon={FaBarcode}>
           <div className="p-3 border-b border-slate-200">
             <div className="relative">
-              <FaBarcode className="absolute left-3 top-3 text-slate-400" />
-              <input placeholder="Scan barcode or type SKU" className="w-full pl-9 pr-3 py-2 border border-slate-300 rounded-lg text-sm" />
+              <FaBarcode className="absolute left-3 top-2.5 text-slate-400" />
+              <input placeholder="Scan barcode or type SKU to jump to product…" className="w-full pl-9 pr-3 py-2 border border-slate-300 rounded-lg text-sm" />
             </div>
           </div>
-          <DenseTable
-            columns={['Product', 'SKU', 'System Qty', 'Physical Count', 'Variance']}
-            rows={openSessions[0]?.items?.map((row) => {
-              const diff = Number(row.counted_quantity || 0) - Number(row.system_quantity || 0)
-              return [row.product_name, row.sku, row.system_quantity, row.counted_quantity, <span className={diff < 0 ? 'text-red-700 font-bold' : diff > 0 ? 'text-emerald-700 font-bold' : 'text-slate-600'}>{diff > 0 ? '+' : ''}{diff}</span>]
-            }) || []}
-            numericColumns={[2, 3, 4]}
-          />
+          {openSessions[0]?.items?.length > 0 ? (
+            <DenseTable
+              columns={['Product', 'SKU', 'System Qty', 'Physical Count', 'Variance']}
+              rows={openSessions[0].items.map((row) => {
+                const diff = Number(row.counted_quantity || 0) - Number(row.system_quantity || 0)
+                return [
+                  row.product_name,
+                  row.sku,
+                  row.system_quantity,
+                  row.counted_quantity,
+                  <span className={`font-bold tabular-nums ${diff < 0 ? 'text-red-700' : diff > 0 ? 'text-emerald-700' : 'text-slate-500'}`}>{diff > 0 ? '+' : ''}{diff}</span>,
+                ]
+              })}
+              numericColumns={[2, 3, 4]}
+            />
+          ) : (
+            <div className="p-4 text-sm text-slate-400 text-center">No items in this session yet.</div>
+          )}
         </Panel>
       )}
 
+      {/* Summary */}
       <div className="bg-white rounded-lg border border-slate-200 p-4">
-        <h2 className="font-semibold">Stocktake Summary</h2>
+        <h2 className="font-semibold text-slate-900">
+          Branch Summary{selectedBranch ? ` — ${selectedBranch.name}` : ''}
+        </h2>
         <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mt-3">
           <Metric label="Total Sessions" value={sessions.length} />
           <Metric label="Approved" value={approvedCount} />
-          <Metric label="Pending Review" value={openSessions.length} />
-          <Metric label="Net Variance Qty" value={sessions.reduce((sum, s) => sum + totalVariance(s.items || []), 0)} />
+          <Metric label="Pending" value={openSessions.length} />
+          <Metric label="Net Variance" value={sessions.reduce((sum, s) => sum + totalVariance(s.items || []), 0)} />
         </div>
-        {openSessions.length > 0 && (
-          <div className="mt-4 flex items-center justify-end gap-2">
-            {openSessions.filter((s) => s.status !== 'cancelled').map((session) => (
-              <button key={session.id} onClick={() => onApprove && onApprove(session)} className="px-4 py-2 bg-emerald-600 text-white rounded-lg text-sm font-semibold">
-                Approve {session.session_no}
-              </button>
-            ))}
+        {openSessions.filter((s) => s.status !== 'cancelled').length > 0 && (
+          <div className="mt-4 border-t border-slate-100 pt-3">
+            <p className="text-xs font-semibold text-slate-500 mb-2">Pending approval — sessions must be approved in order (oldest first):</p>
+            <div className="flex flex-wrap gap-2">
+              {openSessions.filter((s) => s.status !== 'cancelled').map((session) => (
+                <button
+                  key={session.id}
+                  onClick={() => onApprove && onApprove(session)}
+                  className="px-4 py-2 bg-emerald-600 text-white rounded-lg text-xs font-semibold hover:bg-emerald-700"
+                >
+                  Approve {session.session_no}
+                </button>
+              ))}
+            </div>
           </div>
         )}
       </div>
@@ -830,32 +1270,80 @@ const MonthlyVarianceView = ({ sessions = [], onApprove }) => {
   )
 }
 
-const WarehouseView = ({ products: liveProducts = [], branches = [], onTransfer }) => {
-  const warehouses = branches.length ? branches.map((branch) => ({
-    name: branch.name,
-    location: branch.location,
-    value: liveProducts.reduce((sum, product) => sum + product.cost * product.stock, 0),
-    items: liveProducts.length,
-  })) : []
+const WarehouseView = ({ products: liveProducts = [], branches = [], activeBranchId, onTransfer }) => {
+  const activeBranch = branches.find((b) => b.id === activeBranchId) || branches[0]
+  const activeBranchProducts = liveProducts.filter((p) => p.is_active !== false)
+  const stockValue = activeBranchProducts.reduce((sum, p) => sum + p.cost * p.stock, 0)
+  const retailValue = activeBranchProducts.reduce((sum, p) => sum + p.price * p.stock, 0)
+  const lowStock = activeBranchProducts.filter((p) => p.stock <= p.reorderPoint).length
 
   return (
     <div className="space-y-4">
+      {/* Branch cards — show real data only for the active branch */}
       <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-3">
-        {warehouses.map((warehouse) => (
-          <div key={warehouse.name} className="bg-white rounded-lg border border-slate-200 p-4">
-            <FaWarehouse className="text-emerald-600 text-xl mb-3" />
-            <h2 className="font-semibold">{warehouse.name}</h2>
-            <p className="text-xs text-slate-500 mt-1">{warehouse.location}</p>
-            <p className="mt-3 text-lg font-bold">{money(warehouse.value)}</p>
-            <p className="text-xs text-slate-500">{warehouse.items} items</p>
-          </div>
-        ))}
-        {warehouses.length === 0 && (
+        {branches.map((branch) => {
+          const isActive = branch.id === activeBranchId
+          const branchProducts = isActive ? activeBranchProducts : []
+          const bValue = isActive ? stockValue : null
+          const bItems = isActive ? branchProducts.length : null
+          return (
+            <div key={branch.id} className={`bg-white rounded-lg border p-4 ${isActive ? 'border-emerald-300 shadow-sm' : 'border-slate-200 opacity-60'}`}>
+              <div className="flex items-center justify-between mb-3">
+                <FaWarehouse className={`text-xl ${isActive ? 'text-emerald-600' : 'text-slate-400'}`} />
+                {isActive && <span className="px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-700 text-[10px] font-bold">Active</span>}
+              </div>
+              <h2 className="font-semibold text-slate-900">{branch.name}</h2>
+              <p className="text-xs text-slate-500 mt-0.5">{branch.location || branch.code || '—'}</p>
+              {isActive ? (
+                <>
+                  <p className="mt-3 text-lg font-bold text-slate-900">{money(bValue)}</p>
+                  <p className="text-xs text-slate-500">{bItems} active SKUs · retail {money(retailValue)}</p>
+                </>
+              ) : (
+                <p className="mt-3 text-sm text-slate-400">Switch to this branch to view stock.</p>
+              )}
+            </div>
+          )
+        })}
+        {branches.length === 0 && (
           <div className="md:col-span-4 p-4 text-sm text-slate-400 text-center">No warehouse data available.</div>
         )}
       </div>
-      <Panel title="Stock Per Warehouse" icon={FaWarehouse} action={<button onClick={onTransfer} className="px-3 py-1.5 bg-emerald-600 text-white rounded text-xs">Transfer Stock</button>}>
-        <DenseTable columns={['Warehouse', 'Product', 'Qty', 'Stock Value']} rows={(branches || []).flatMap((warehouse) => (liveProducts || []).map((product) => [warehouse.name, product.name, product.stock, money(product.stock * product.cost)]))} numericColumns={[2, 3]} />
+
+      {/* Summary metrics for active branch */}
+      {activeBranch && (
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+          <Metric label="Active SKUs" value={activeBranchProducts.length.toLocaleString()} />
+          <Metric label="Stock at Cost" value={money(stockValue)} />
+          <Metric label="Stock at Retail" value={money(retailValue)} />
+          <Metric label="Low Stock Items" value={lowStock.toLocaleString()} />
+        </div>
+      )}
+
+      {/* Stock table — current branch only */}
+      <Panel
+        title={`Stock — ${activeBranch?.name || 'Current Branch'}`}
+        icon={FaWarehouse}
+        action={<button onClick={onTransfer} className="px-3 py-1.5 bg-emerald-600 text-white rounded text-xs">Transfer Stock</button>}
+      >
+        {activeBranchProducts.length > 0 ? (
+          <DenseTable
+            columns={['Product', 'SKU', 'Qty', 'Cost Price', 'Stock at Cost', 'Retail Price', 'Stock at Retail', 'Status']}
+            rows={activeBranchProducts.map((product) => [
+              product.name,
+              product.sku,
+              product.stock,
+              money(product.cost),
+              money(product.stock * product.cost),
+              money(product.price),
+              money(product.stock * product.price),
+              <StockBar value={product.stock} reorder={product.reorderPoint} />,
+            ])}
+            numericColumns={[2, 3, 4, 5, 6]}
+          />
+        ) : (
+          <div className="p-4 text-sm text-slate-400 text-center">No products in this branch.</div>
+        )}
       </Panel>
     </div>
   )
@@ -919,6 +1407,13 @@ const ReportsView = ({ categories = [] }) => {
   }, [loadingVal, branchId, startDate, endDate, categoryId])
 
   const triggerValuation = () => { setValuationRows([]); setValuationSummary(null); setLoadingVal(true) }
+  const triggerAll = () => { triggerValuation(); triggerFsm() }
+
+  // Auto-load valuation + fast/slow on mount when a branch is available
+  useEffect(() => {
+    if (branchId) { triggerValuation(); triggerFsm() }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
 
   useEffect(() => {
     if ((branchId || startDate || endDate || categoryId) && loadingFsm) {
@@ -1040,7 +1535,7 @@ const ReportsView = ({ categories = [] }) => {
           </select>
         </label>
         <div className="flex gap-2">
-          <button onClick={triggerValuation}
+          <button onClick={triggerAll}
             className="flex-1 px-3 py-2 bg-emerald-600 text-white rounded-lg text-sm font-semibold hover:bg-emerald-700 transition">
             Apply Filters
           </button>
@@ -1393,7 +1888,14 @@ const Status = ({ product }) => {
   return <span className={`px-2 py-1 rounded text-xs font-semibold ${tone}`}>{label}</span>
 }
 
-const Badge = ({ children }) => <span className="px-2 py-1 rounded text-xs font-semibold bg-slate-100 text-slate-700">{children}</span>
+const BADGE_TONES = {
+  emerald: 'bg-emerald-100 text-emerald-700',
+  red: 'bg-red-100 text-red-700',
+  amber: 'bg-amber-100 text-amber-700',
+  blue: 'bg-blue-100 text-blue-700',
+  slate: 'bg-slate-100 text-slate-700',
+}
+const Badge = ({ children, tone = 'slate' }) => <span className={`px-2 py-1 rounded text-xs font-semibold ${BADGE_TONES[tone] || BADGE_TONES.slate}`}>{children}</span>
 
 const Metric = ({ label, value }) => <div className="bg-white rounded-lg border border-slate-200 p-4"><p className="text-xs text-slate-500">{label}</p><p className="text-xl font-bold text-slate-900 mt-1">{value}</p></div>
 
@@ -1415,7 +1917,7 @@ const InventoryModal = ({ modal, draft, setDraft, products, categories, supplier
         {modal.type === 'poDetail' && <PODetail data={modal.data} onEdit={() => openModal({ type: 'po', title: 'Edit ' + (modal.data.po_no || 'PO'), data: modal.data }) } onCancel={() => openModal({ type: 'poCancel', title: 'Cancel Purchase Order', data: modal.data })} />}
         {modal.type === 'receive' && <ReceivePreview purchaseOrders={purchaseOrders} data={draft} setData={setDraft} />}
         {modal.type === 'adjust' && <AdjustmentForm product={modal.data} data={draft} setData={setDraft} />}
-        {modal.type === 'stocktake' && <StocktakeForm data={draft} setData={setDraft} />}
+        {modal.type === 'stocktake' && <StocktakeForm data={{ ...modal.data, ...draft }} setData={setDraft} />}
         {modal.type === 'countStocktake' && <StocktakeCountForm session={modal.data} data={draft} setData={setDraft} />}
         {modal.type === 'approveVariance' && <ApprovalPreview stocktakes={stocktakes} data={draft} setData={setDraft} />}
       {modal.type === 'transfer' && <TransferForm />}
@@ -1674,7 +2176,22 @@ const ReceivePreview = ({ purchaseOrders = [], data = {}, setData }) => {
   )
 }
 const AdjustmentForm = ({ product = {}, data = {}, setData }) => <div className="grid grid-cols-1 md:grid-cols-2 gap-3"><Field label="Product" value={product.name} /><label><span className="text-xs font-semibold text-slate-600">Reason</span><select value={data.reason || 'Manual correction'} onChange={(event) => setData((current) => ({ ...current, reason: event.target.value }))} className="mt-1 w-full px-3 py-2 border border-slate-300 rounded-lg text-sm"><option>Manual correction</option><option>Damage</option><option>Expiry</option><option>Receiving correction</option></select></label><Field label="Quantity change" value={data.quantity_delta || 1} type="number" onChange={(value) => setData((current) => ({ ...current, quantity_delta: value }))} /><div className="rounded-lg bg-amber-50 text-amber-700 p-3 text-sm font-semibold">Positive adds stock. Negative removes stock.</div></div>
-const StocktakeForm = ({ data = {}, setData }) => <div className="grid grid-cols-1 gap-3"><Field label="Note" value={data.note || ''} onChange={(value) => setData((current) => ({ ...current, note: value }))} /><div className="rounded-lg bg-emerald-50 text-emerald-700 p-3 text-sm font-semibold">Starting a stocktake snapshots current backend stock for the active branch.</div></div>
+const StocktakeForm = ({ data = {}, setData }) => (
+  <div className="grid grid-cols-1 gap-3">
+    <div className="flex items-center gap-3 rounded-lg border border-emerald-200 bg-emerald-50 px-4 py-3">
+      <FaClipboardCheck className="text-emerald-600 shrink-0" />
+      <div>
+        <p className="text-sm font-bold text-emerald-800">
+          Branch: <span className="font-black">{data.branchName || 'Current active branch'}</span>
+        </p>
+        <p className="text-xs text-emerald-600 mt-0.5">
+          Starting a session snapshots the current stock quantities for this branch. All products at this branch will be included.
+        </p>
+      </div>
+    </div>
+    <Field label="Note (optional)" value={data.note || ''} onChange={(value) => setData((current) => ({ ...current, note: value }))} />
+  </div>
+)
 const StocktakeCountForm = ({ session, data = {}, setData }) => {
   const items = session.items || []
   return (

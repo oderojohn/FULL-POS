@@ -1,13 +1,18 @@
-import React, { useEffect, useMemo, useState } from 'react'
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import {
-  FaBan, FaBars, FaCashRegister, FaChartLine, FaCheck, FaChevronLeft,
-  FaChevronRight, FaCreditCard, FaExclamationCircle, FaList, FaLock, FaMinus,
-  FaEdit, FaMobileAlt, FaMoneyBillWave, FaPause, FaPlus, FaPrint, FaReceipt, FaSearch,
-  FaShoppingBag, FaSignOutAlt, FaStore, FaTimes, FaTrash, FaUser
+  FaBan, FaBars, FaBell, FaCalendarAlt, FaCashRegister, FaChartLine, FaCheck, FaChevronLeft,
+  FaChevronRight, FaCreditCard, FaExclamationCircle, FaExclamationTriangle,
+  FaList, FaLock, FaMinus, FaEdit, FaMobileAlt, FaMoneyBillWave, FaPause, FaPlus, FaPrint,
+  FaReceipt, FaSearch, FaShoppingBag, FaSignOutAlt, FaStore, FaTag, FaTimes, FaTrash, FaUser
 } from 'react-icons/fa'
 import { posApi } from '../api/posApi'
 import { useAuth } from '../auth/AuthContext'
+import { useOfflineStatus } from '../hooks/useOfflineStatus'
+import { getDeviceId, getDeviceShortCode } from '../offline/deviceId'
+import { savePendingSale } from '../offline/db'
+import { getLocalProducts, getLocalCategories, getLocalCustomersFiltered, saveApiDataToCache } from '../offline/catalogSync'
+import { SkeletonProductGrid, DotLoader, Spinner } from '../components/LoadingKit'
 
 const currency = 'Ksh'
 const money = (value) => `${currency} ${Number(value).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
@@ -84,10 +89,13 @@ const productCardSizes = {
 const PosTerminal = () => {
   const navigate = useNavigate()
   const { user, can, logout, branch: authBranch, company: authCompany, reloadSignal } = useAuth()
+  const { effectivelyOnline, refreshPendingCount, syncCatalog } = useOfflineStatus(authBranch?.id)
+  const [usingCachedData, setUsingCachedData] = useState(false)
   const [apiProducts, setApiProducts] = useState([])
   const [apiCategories, setApiCategories] = useState([])
   const [apiCustomers, setApiCustomers] = useState([])
   const [apiSales, setApiSales] = useState([])
+  const [activeDiscountRules, setActiveDiscountRules] = useState([])
   const [branch, setBranch] = useState(null)
   const [registers, setRegisters] = useState([])
   const [register, setRegister] = useState(null)
@@ -95,6 +103,7 @@ const PosTerminal = () => {
   const [heldApiOrders, setHeldApiOrders] = useState([])
   const [lowStockRows, setLowStockRows] = useState([])
   const [statusMessage, setStatusMessage] = useState('')
+  const [initialLoading, setInitialLoading] = useState(true)
   const [busy, setBusy] = useState(false)
   const [openingCash, setOpeningCash] = useState('0.00')
   const [countedCash, setCountedCash] = useState('')
@@ -144,18 +153,25 @@ const PosTerminal = () => {
   const refreshApiData = async (branchOverride = branch || authBranch, shiftOverride = shift) => {
     const branchId = branchOverride?.id
     if (!branchId) return
-    const [productResponse, categoryResponse, customerResponse, heldResponse, lowStockResponse] = await Promise.all([
+    const [productResponse, categoryResponse, customerResponse, heldResponse, lowStockResponse, discountRulesResponse] = await Promise.all([
       posApi.products({ branch: branchId, page_size: 500 }),
       posApi.categories({ branch: branchId }),
       posApi.customers({ branch: branchId }),
       posApi.heldOrders({ branch: branchId, status: 'open' }),
       posApi.lowStock({ branch: branchId }),
+      posApi.activeDiscountRules({ branch: branchId }).catch(() => []),
     ])
-    setApiProducts(productResponse.results || productResponse)
-    setApiCategories(categoryResponse.results || categoryResponse)
-    setApiCustomers(customerResponse.results || customerResponse)
+    const products = productResponse.results || productResponse
+    const categories = categoryResponse.results || categoryResponse
+    const customers = customerResponse.results || customerResponse
+    setApiProducts(products)
+    setApiCategories(categories)
+    setApiCustomers(customers)
     setHeldApiOrders(heldResponse.results || heldResponse)
     setLowStockRows(lowStockResponse.results || lowStockResponse)
+    setActiveDiscountRules(Array.isArray(discountRulesResponse) ? discountRulesResponse : (discountRulesResponse?.results || []))
+    setUsingCachedData(false)
+    saveApiDataToCache(branchId, { products, categories, customers }).catch(() => {})
     await loadShiftSales(branchId, shiftOverride?.id)
   }
 
@@ -194,10 +210,32 @@ const PosTerminal = () => {
         await refreshApiData(selectedBranch, selectedShift)
       } catch (error) {
         if (!active) return
-        setStatusMessage(error.data?.detail || 'Backend unavailable. Live backend data could not be loaded.')
+        const branchId = authBranch?.id
+        if (branchId) {
+          try {
+            const [cachedProducts, cachedCategories, cachedCustomers] = await Promise.all([
+              getLocalProducts(branchId),
+              getLocalCategories(branchId),
+              getLocalCustomersFiltered(branchId),
+            ])
+            if (cachedProducts.length || cachedCategories.length) {
+              setApiProducts(cachedProducts)
+              setApiCategories(cachedCategories)
+              setApiCustomers(cachedCustomers)
+              setUsingCachedData(true)
+              setStatusMessage('Offline — using cached catalog. Sales will sync when connected.')
+              return
+            }
+          } catch {
+            // IndexedDB read failed — fall through to empty state
+          }
+        }
+        setStatusMessage(error.data?.detail || 'Offline: no cached data yet. Connect to load products.')
         setApiProducts([])
         setApiCustomers([])
         setApiSales([])
+      } finally {
+        if (active) setInitialLoading(false)
       }
     }
 
@@ -254,13 +292,89 @@ const PosTerminal = () => {
     })
   }, [activeCategory, query, saleProducts])
 
-  const subtotal = cart.reduce((sum, item) => sum + item.price * item.qty, 0)
-  const total = subtotal
-  const itemCount = cart.reduce((sum, item) => sum + item.qty, 0)
-  const lowStockCount = lowStockRows.length
-  const selectedCustomer = apiCustomers.find((item) => item.name === customer)
+  const subtotal = useMemo(() => cart.reduce((sum, item) => sum + item.price * item.qty, 0), [cart])
+  const itemCount = useMemo(() => cart.reduce((sum, item) => sum + item.qty, 0), [cart])
 
-  const addProduct = (product) => {
+  const cartWithDiscounts = useMemo(() => {
+    if (!activeDiscountRules.length) return cart.map((item) => ({ ...item, discountAmount: 0 }))
+    return cart.map((item) => {
+      const gross = item.price * item.qty
+      const productId = String(item.productId || item.id)
+      const categoryName = item.category
+      let rule = activeDiscountRules.find((r) => r.target === 'product' && String(r.product) === productId)
+      if (!rule) rule = activeDiscountRules.find((r) => r.target === 'category' && r.category_name === categoryName)
+      if (!rule) rule = activeDiscountRules.find((r) => r.target === 'all')
+      if (!rule) return { ...item, discountAmount: 0 }
+      let disc = rule.discount_type === 'percent'
+        ? (gross * Number(rule.value)) / 100
+        : Math.min(Number(rule.value), gross)
+      disc = Math.round(disc * 100) / 100
+      return { ...item, discountAmount: disc, appliedRule: rule.name }
+    })
+  }, [cart, activeDiscountRules])
+
+  const discountTotal = useMemo(() => cartWithDiscounts.reduce((s, i) => s + i.discountAmount, 0), [cartWithDiscounts])
+  const total = Math.max(0, subtotal - discountTotal)
+  const lowStockCount = lowStockRows.length
+
+  // Poll active discount rules every 30 s so expiries apply without a manual refresh.
+  // Depends only on branch?.id — not on activeDiscountRules — so the interval is stable.
+  useEffect(() => {
+    if (!branch?.id) return
+    const interval = setInterval(async () => {
+      try {
+        const fresh = await posApi.activeDiscountRules({ branch: branch.id })
+        setActiveDiscountRules(Array.isArray(fresh) ? fresh : (fresh?.results || []))
+      } catch { /* silent — never interrupt the cashier */ }
+    }, 30_000)
+    return () => clearInterval(interval)
+  }, [branch?.id])
+
+  // Refresh product prices every 5 min to pick up price-schedule changes.
+  useEffect(() => {
+    if (!branch?.id) return
+    const interval = setInterval(async () => {
+      try {
+        const res = await posApi.products({ branch: branch.id, page_size: 500 })
+        setApiProducts(res.results || res)
+      } catch { /* silent */ }
+    }, 5 * 60_000)
+    return () => clearInterval(interval)
+  }, [branch?.id])
+
+  // Notification bell state
+  const [notifications, setNotifications] = useState([])
+  const [seenNotifIds, setSeenNotifIds] = useState(() => {
+    try { return new Set(JSON.parse(localStorage.getItem('nexa-pos-seen-notifs') || '[]')) } catch { return new Set() }
+  })
+
+  useEffect(() => {
+    if (!branch?.id) return
+    const fetchNotifs = async () => {
+      try {
+        const res = await posApi.posNotifications({ branch: branch.id })
+        setNotifications(res.notifications || [])
+      } catch { /* silent */ }
+    }
+    fetchNotifs()
+    const interval = setInterval(fetchNotifs, 60_000)
+    return () => clearInterval(interval)
+  }, [branch?.id])
+
+  const unreadCount = useMemo(
+    () => notifications.filter((n) => !seenNotifIds.has(n.id)).length,
+    [notifications, seenNotifIds],
+  )
+
+  const handleNotifOpen = useCallback(() => {
+    const next = new Set([...seenNotifIds, ...notifications.map((n) => n.id)])
+    setSeenNotifIds(next)
+    try { localStorage.setItem('nexa-pos-seen-notifs', JSON.stringify([...next])) } catch { /* ok */ }
+  }, [notifications, seenNotifIds])
+
+  const selectedCustomer = useMemo(() => apiCustomers.find((item) => item.name === customer), [apiCustomers, customer])
+
+  const addProduct = useCallback((product) => {
     if (product.stock === 0) {
       setStatusMessage(`${product.name} is out of stock.`)
       return
@@ -282,7 +396,7 @@ const PosTerminal = () => {
       return [...current, { ...product, qty: 1 }]
     })
     setWorkspace('cart')
-  }
+  }, [])
 
   useEffect(() => {
     if (!selectedCustomer?.phone) return
@@ -291,15 +405,22 @@ const PosTerminal = () => {
     }
   }, [selectedCustomer?.id, paymentMode])
 
-  const changeQty = (id, delta) => {
-    if (editingHeldOrderId && delta < 0) {
-      setStatusMessage('Loaded held orders can only be increased or have new items added.')
+  const changeQty = useCallback((id, delta) => {
+    if (editingHeldOrderId) {
+      setStatusMessage('Items from a held order cannot be edited. Clear the cart to start fresh.')
       return
     }
     setCart((current) => current
       .map((item) => item.id === id ? { ...item, qty: Math.max(1, Math.min(item.qty + delta, item.stock || 99)) } : item)
     )
-  }
+  }, [editingHeldOrderId])
+
+  const setItemPrice = useCallback((id, newPrice) => {
+    if (editingHeldOrderId) return
+    const price = parseFloat(newPrice)
+    if (isNaN(price) || price < 0) return
+    setCart((current) => current.map((item) => item.id === id ? { ...item, price } : item))
+  }, [editingHeldOrderId])
 
   const clearCart = () => {
     setCart([])
@@ -418,20 +539,84 @@ const PosTerminal = () => {
       return
     }
 
-    const sale = await withBusy(() => posApi.checkout({
+    const deviceId = getDeviceId()
+    const checkoutPayload = {
       branch: branch.id,
       register: register.id,
       shift: shift.id,
       cashier: user.id,
       customer: selectedCustomer?.id || null,
       mode: mode.toLowerCase(),
-      items: cart.map((item) => ({ product: item.productId || item.id, quantity: item.qty, discount_amount: '0.00' })),
+      items: cartWithDiscounts.map((item) => ({ product: item.productId || item.id, quantity: item.qty, discount_amount: item.discountAmount.toFixed(2) })),
       payments: built.payments,
       mpesa_checkout_request_id: opts.mpesa_checkout_request_id || '',
       mpesa_direct_transaction_id: opts.mpesa_direct_transaction_id || '',
       mpesa_manual_approval: opts.mpesa_manual_approval || false,
-    }), `Sale ${built.payments[0]?.method === 'cash' ? 'completed' : 'recorded'} successfully.`)
+      device_id: deviceId,
+    }
+
+    // Save offline when server is unreachable (cash sales, or manually-confirmed M-Pesa)
+    const isCashOnly = built.payments.every((p) => p.method === 'cash')
+    const hasMpesa = built.payments.some((p) => p.method === 'mpesa')
+    const isOfflineMpesa = !effectivelyOnline && hasMpesa && opts.offline_mpesa
+
+    if (!effectivelyOnline && (isCashOnly || isOfflineMpesa)) {
+      const today = new Date().toISOString().slice(0, 10).replace(/-/g, '')
+      const seq = String(Date.now()).slice(-4)
+      const offlineReceiptNo = `${branch.code}-${getDeviceShortCode()}-${today}-${seq}`
+      const offlineSale = { ...checkoutPayload, receipt_no: offlineReceiptNo, created_at: new Date().toISOString() }
+      await savePendingSale(offlineSale)
+      await refreshPendingCount()
+      const payLabel = isOfflineMpesa ? 'M-Pesa (offline)' : 'cash'
+      setStatusMessage(`Saved offline [${payLabel}]: ${offlineReceiptNo}. Will sync when connected.`)
+      const primaryPayment = built.payments[0]
+      const receipt = {
+        id: offlineReceiptNo, saleId: null, customer: selectedCustomer?.name || 'Walk-in',
+        cashier: user.username, branch: branch?.name || '', register: register?.code || register?.name || '',
+        mode: mode.toLowerCase(), method: primaryPayment?.method || 'cash', amount: total, subtotal,
+        tax: 0, discount: discountTotal, paid: Number(primaryPayment?.amount || total),
+        change: isCashOnly ? Math.max(0, Number(primaryPayment?.amount || total) - total) : 0,
+        payments: built.payments,
+        time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+        status: 'Offline', items: cartWithDiscounts.map((item) => ({ productId: item.id, name: item.name, qty: item.qty, price: item.price, discountAmount: item.discountAmount || 0, appliedRule: item.appliedRule || '' })),
+      }
+      setLastCheckout(receipt)
+      // Open cash drawer for cash payments when running in Electron
+      if (isCashOnly && window.electronAPI?.openCashDrawer) {
+        try {
+          const deviceCfg = JSON.parse(localStorage.getItem('nexa-device-settings') || '{}')
+          window.electronAPI.openCashDrawer({ port: deviceCfg.cashDrawerPort || '' })
+        } catch (_) {}
+      }
+      // Remove the held order immediately from local state (we're offline, can't call API)
+      const heldIdToRemove = editingHeldOrderId
+      clearCart()
+      if (heldIdToRemove) {
+        setHeldApiOrders((prev) => prev.filter((o) => o.id !== heldIdToRemove))
+        posApi.cancelHeldOrder(heldIdToRemove).catch(() => {})
+      }
+      resetPaymentInputs()
+      setPaymentModalOpen(false)
+      setWorkspace('receipts')
+      setReceiptModal(receipt)
+      return
+    }
+
+    if (!effectivelyOnline && hasMpesa) {
+      setStatusMessage('You are offline. Use "Confirm M-Pesa received" in the payment screen to record a manual M-Pesa payment.')
+      return
+    }
+
+    if (!effectivelyOnline) {
+      setStatusMessage('You are offline. Only cash and manually-confirmed M-Pesa payments are available.')
+      return
+    }
+
+    const sale = await withBusy(() => posApi.checkout(checkoutPayload), `Sale ${built.payments[0]?.method === 'cash' ? 'completed' : 'recorded'} successfully.`)
     if (sale) {
+      const discountByProduct = Object.fromEntries(
+        cartWithDiscounts.filter((i) => i.discountAmount > 0).map((i) => [String(i.productId || i.id), { discountAmount: i.discountAmount, appliedRule: i.appliedRule || '' }])
+      )
       setLastCheckout({
         saleId: sale.id,
         receipt: sale.receipt_no,
@@ -455,8 +640,12 @@ const PosTerminal = () => {
           name: item.product_name,
           qty: item.quantity,
           price: Number(item.unit_price),
+          discountAmount: Number(item.discount_amount || 0) || (discountByProduct[String(item.product)]?.discountAmount ?? 0),
+          appliedRule: discountByProduct[String(item.product)]?.appliedRule || '',
         })),
       })
+      // Capture before clearCart() resets the state
+      const heldIdToCancel = editingHeldOrderId
       clearCart()
       resetPaymentInputs()
       setPaymentModalOpen(false)
@@ -484,12 +673,22 @@ const PosTerminal = () => {
           name: item.product_name,
           qty: item.quantity,
           price: Number(item.unit_price),
+          discountAmount: Number(item.discount_amount || 0) || (discountByProduct[String(item.product)]?.discountAmount ?? 0),
+          appliedRule: discountByProduct[String(item.product)]?.appliedRule || '',
         })),
       })
+      // Cancel the held order BEFORE refreshing so the fetch returns the clean list
+      if (heldIdToCancel) {
+        await posApi.cancelHeldOrder(heldIdToCancel).catch(() => {})
+      }
       await refreshApiData(branch, shift)
-      if (editingHeldOrderId) {
-        await posApi.cancelHeldOrder(editingHeldOrderId).catch(() => {})
-        setEditingHeldOrderId(null)
+      // Open cash drawer for cash payments when running in Electron
+      const hasCash = (sale.payments || built.payments).some((p) => p.method === 'cash')
+      if (hasCash && window.electronAPI?.openCashDrawer) {
+        try {
+          const deviceCfg = JSON.parse(localStorage.getItem('nexa-device-settings') || '{}')
+          window.electronAPI.openCashDrawer({ port: deviceCfg.cashDrawerPort || '' })
+        } catch (_) {}
       }
       const change = Number(sale.change_due || 0)
       if (change > 0) {
@@ -704,8 +903,18 @@ const PosTerminal = () => {
         onExit={() => navigate('/dashboard')}
         onLogout={logout}
         user={user}
+        notifications={notifications}
+        unreadCount={unreadCount}
+        onNotifOpen={handleNotifOpen}
       />
       <StatusToast message={statusMessage} onDismiss={() => setStatusMessage('')} />
+
+      {usingCachedData && (
+        <div className="flex items-center gap-2 bg-amber-50 px-4 py-1.5 text-xs font-semibold text-amber-800 border-b border-amber-200">
+          <FaExclamationTriangle className="shrink-0" />
+          <span>Offline mode — showing cached catalog. Prices may be outdated. Sales will sync when connected.</span>
+        </div>
+      )}
 
       <div className={`pos-shell-grid grid h-[calc(100dvh-var(--pos-header))] grid-cols-1 overflow-hidden ${sidebarCollapsed ? 'lg:grid-cols-[56px_minmax(0,1fr)_minmax(360px,440px)] xl:grid-cols-[56px_minmax(0,1fr)_minmax(380px,460px)]' : 'lg:grid-cols-[172px_minmax(0,1fr)_minmax(360px,440px)] xl:grid-cols-[192px_minmax(0,1fr)_minmax(380px,460px)]'}`}>
         <CategoryRail
@@ -727,17 +936,21 @@ const PosTerminal = () => {
             setProductSize={setProductSize}
             onOpenCategories={() => setMobilePanel('categories')}
           />
-          <ProductGrid products={visibleProducts} addProduct={addProduct} productSize={productSize} />
+          {initialLoading
+            ? <SkeletonProductGrid count={20} />
+            : <ProductGrid products={visibleProducts} addProduct={addProduct} productSize={productSize} />
+          }
         </main>
 
         <WorkspacePanel
           mode={mode}
-          cart={cart}
+          cart={cartWithDiscounts}
           subtotal={subtotal}
-          discount={0}
+          discount={discountTotal}
           total={total}
           itemCount={itemCount}
           changeQty={changeQty}
+          setItemPrice={setItemPrice}
           clearCart={clearCart}
           salesHistory={apiSales}
           shiftSummary={shiftSalesSummary}
@@ -787,6 +1000,7 @@ const PosTerminal = () => {
           shift={shift}
           cartEmpty={!cart.length}
           branch={branch}
+          effectivelyOnline={effectivelyOnline}
         />
       )}
 
@@ -832,15 +1046,16 @@ const PosTerminal = () => {
       )}
 
       {mobilePanel === 'workspace' && (
-        <MobileSheet title="POS Controls" onClose={() => setMobilePanel(null)}>
+        <MobileSheet title="POS Controls" onClose={() => setMobilePanel(null)} nativeScroll={false}>
           <WorkspacePanel
             mode={mode}
             cart={cart}
             subtotal={subtotal}
-            discount={0}
+            discount={discountTotal}
             total={total}
             itemCount={itemCount}
             changeQty={changeQty}
+            setItemPrice={setItemPrice}
             clearCart={clearCart}
             salesHistory={apiSales}
             shiftSummary={shiftSalesSummary}
@@ -1000,9 +1215,120 @@ const PosCompanyLogo = ({ company, branch, register }) => {
   )
 }
 
+// ── Notification Bell ─────────────────────────────────────────────────────────
+
+const _NOTIF_STYLES = {
+  success: { bg: 'bg-emerald-50', iconColor: 'text-emerald-600' },
+  info:    { bg: 'bg-sky-50',     iconColor: 'text-sky-600'     },
+  warning: { bg: 'bg-amber-50',   iconColor: 'text-amber-600'   },
+  error:   { bg: 'bg-red-50',     iconColor: 'text-red-600'     },
+}
+
+const _notifIcon = (type) => {
+  if (type === 'discount_active') return FaTag
+  if (type === 'price_scheduled') return FaCalendarAlt
+  if (type === 'low_stock' || type === 'out_of_stock') return FaExclamationTriangle
+  return FaBell
+}
+
+const NotifItem = ({ notif }) => {
+  const s = _NOTIF_STYLES[notif.severity] || _NOTIF_STYLES.info
+  const Icon = _notifIcon(notif.type)
+  return (
+    <div className={`flex gap-2.5 border-b border-slate-100 px-3 py-2.5 ${s.bg}`}>
+      <div className={`mt-0.5 shrink-0 ${s.iconColor}`}><Icon className="text-[11px]" /></div>
+      <div className="min-w-0">
+        <p className="text-[11px] font-semibold text-slate-800 leading-snug">{notif.title}</p>
+        <p className="text-[10px] text-slate-500 leading-snug">{notif.body}</p>
+      </div>
+    </div>
+  )
+}
+
+const _SECTIONS = [
+  { key: 'discounts', label: 'Active Discounts',   labelCls: 'text-emerald-700 bg-emerald-50', types: ['discount_active'] },
+  { key: 'prices',    label: 'Scheduled Prices',   labelCls: 'text-sky-700 bg-sky-50',         types: ['price_scheduled'] },
+  { key: 'stock',     label: 'Stock Alerts',        labelCls: 'text-amber-700 bg-amber-50',    types: ['low_stock', 'out_of_stock'] },
+]
+
+const NotificationBell = ({ notifications, unreadCount, onOpen }) => {
+  const [open, setOpen] = useState(false)
+  const ref = useRef(null)
+
+  useEffect(() => {
+    if (!open) return
+    const handler = (e) => { if (ref.current && !ref.current.contains(e.target)) setOpen(false) }
+    document.addEventListener('mousedown', handler)
+    return () => document.removeEventListener('mousedown', handler)
+  }, [open])
+
+  const toggle = () => {
+    if (!open) onOpen?.()
+    setOpen((o) => !o)
+  }
+
+  return (
+    <div ref={ref} className="relative">
+      <button
+        type="button"
+        onClick={toggle}
+        aria-label="Notifications"
+        className={`relative pos-press inline-flex h-9 w-9 items-center justify-center rounded-xl text-slate-600 ring-1 hover:bg-white ${open ? 'bg-white ring-slate-300' : 'ring-slate-200/80'}`}
+      >
+        <FaBell className="text-sm" />
+        {unreadCount > 0 && (
+          <span className="absolute right-1 top-1 flex h-[14px] min-w-[14px] items-center justify-center rounded-full bg-red-500 px-0.5 text-[8px] font-bold text-white">
+            {unreadCount > 9 ? '9+' : unreadCount}
+          </span>
+        )}
+      </button>
+
+      {open && (
+        <div className="absolute right-0 top-full z-50 mt-2 flex w-72 flex-col overflow-hidden rounded-xl border border-slate-200 bg-white shadow-xl" style={{ maxHeight: '30rem' }}>
+          <div className="flex items-center justify-between border-b border-slate-100 px-3 py-2">
+            <div className="flex items-center gap-1.5">
+              <FaBell className="text-[11px] text-slate-500" />
+              <span className="text-xs font-semibold text-slate-700">Notifications</span>
+              {notifications.length > 0 && (
+                <span className="rounded-full bg-slate-100 px-1.5 py-0.5 text-[9px] font-bold text-slate-500">{notifications.length}</span>
+              )}
+            </div>
+            <button type="button" onClick={() => setOpen(false)} className="pos-press rounded p-1 text-slate-400 hover:bg-slate-100">
+              <FaTimes className="text-[10px]" />
+            </button>
+          </div>
+
+          <div className="overflow-y-auto">
+            {notifications.length === 0 ? (
+              <div className="flex flex-col items-center gap-2 py-10 text-slate-400">
+                <FaBell className="text-2xl" />
+                <p className="text-xs">All clear</p>
+              </div>
+            ) : (
+              _SECTIONS.map(({ key, label, labelCls, types }) => {
+                const items = notifications.filter((n) => types.includes(n.type))
+                if (!items.length) return null
+                return (
+                  <div key={key}>
+                    <p className={`sticky top-0 border-b border-slate-100 px-3 py-1.5 text-[9px] font-bold uppercase tracking-wider ${labelCls}`}>
+                      {label}
+                    </p>
+                    {items.map((n) => <NotifItem key={n.id} notif={n} />)}
+                  </div>
+                )
+              })
+            )}
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
+
 const TopBar = ({
   mode, setMode, company, branch, register, registers = [],
   onRegisterChange, shift, lowStockCount, heldCount, itemCount, onPay, onExit, onLogout, user,
+  notifications = [], unreadCount = 0, onNotifOpen,
 }) => (
   <header className="sticky top-0 z-40 h-[var(--pos-header)] border-b border-slate-200/80 pos-glass shadow-sm">
     <div className="flex h-full min-w-0 items-center gap-1.5 px-2.5 sm:gap-3 sm:px-4">
@@ -1045,6 +1371,8 @@ const TopBar = ({
           <FaUser className="text-slate-400" />
           <span className="max-w-[8rem] truncate">{user?.username || user?.first_name || 'Cashier'}</span>
         </span>
+
+        <NotificationBell notifications={notifications} unreadCount={unreadCount} onOpen={onNotifOpen} />
 
         <button type="button" onClick={onExit} className="pos-press inline-flex h-9 w-9 items-center justify-center gap-1.5 rounded-xl text-xs font-semibold text-slate-600 ring-1 ring-slate-200/80 hover:bg-white sm:w-auto sm:px-3">
           <FaSignOutAlt />
@@ -1168,27 +1496,27 @@ const CatalogHeader = ({ activeCategory, query, setQuery, shown, total, productS
   </div>
 )
 
-const ProductGrid = ({ products: visibleProducts, addProduct, productSize }) => {
+const ProductGrid = React.memo(({ products: visibleProducts, addProduct, productSize }) => {
   const size = productCardSizes[productSize]
 
   return (
   <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain p-2 pb-28 lg:pb-2">
     <div className={`grid ${size.grid}`}>
       {visibleProducts.map((product) => (
-        <ProductTile key={product.id} product={product} onClick={() => addProduct(product)} size={size} />
+        <ProductTile key={product.id} product={product} onAdd={addProduct} size={size} />
       ))}
     </div>
   </div>
   )
-}
+})
 
-const ProductTile = ({ product, onClick, size }) => {
+const ProductTile = React.memo(({ product, onAdd, size }) => {
   const out = product.stock === 0
 
   return (
     <button
       type="button"
-      onClick={onClick}
+      onClick={() => onAdd(product)}
       disabled={out}
       className={`pos-press group relative flex flex-col rounded-xl border border-slate-200/80 bg-white text-left shadow-sm ring-1 ring-transparent transition hover:border-emerald-300 hover:shadow-md hover:ring-emerald-100 disabled:cursor-not-allowed disabled:opacity-45 sm:rounded-2xl ${size.tile}`}
     >
@@ -1204,7 +1532,7 @@ const ProductTile = ({ product, onClick, size }) => {
       </p>
     </button>
   )
-}
+})
 
 const WorkspacePanel = ({
   mode,
@@ -1214,6 +1542,7 @@ const WorkspacePanel = ({
   total,
   itemCount,
   changeQty,
+  setItemPrice,
   clearCart,
   customer,
   salesHistory,
@@ -1240,7 +1569,7 @@ const WorkspacePanel = ({
   onOpenTransactions,
   mobile = false,
 }) => (
-  <section className={`${mobile ? 'flex h-full border-0 shadow-none' : 'hidden border-l shadow-2xl lg:flex lg:shadow-none'} min-h-0 flex-col border-slate-200/80 bg-white`}>
+  <section className={`${mobile ? 'flex-1 min-h-0 border-0 shadow-none' : 'hidden border-l shadow-2xl lg:flex lg:shadow-none'} flex flex-col border-slate-200/80 bg-white`}>
     <WorkspaceTabBar workspace={workspace} setWorkspace={setWorkspace} itemCount={itemCount} heldCount={heldCount} />
 
     <div className={`shrink-0 border-b px-3 py-2 ${itemCount === 0 ? 'border-red-100 bg-red-50/70' : 'border-slate-100 bg-gradient-to-br from-slate-50 to-white'}`}>
@@ -1270,6 +1599,7 @@ const WorkspacePanel = ({
         total={total}
         itemCount={itemCount}
         changeQty={changeQty}
+        setItemPrice={setItemPrice}
         clearCart={clearCart}
         setWorkspace={setWorkspace}
         onHold={onHold}
@@ -1314,12 +1644,12 @@ const WorkspaceTabBar = ({ workspace, setWorkspace, itemCount, heldCount = 0 }) 
             key={tab.key}
             type="button"
             onClick={() => setWorkspace(tab.key)}
-            className={`pos-press relative flex min-w-0 flex-1 items-center justify-center gap-1 rounded-lg px-2 py-2 text-[11px] font-semibold transition sm:px-2.5 sm:text-xs ${active ? 'bg-white text-slate-900 shadow-sm ring-1 ring-slate-200/80' : 'text-slate-500 hover:text-slate-800'}`}
+            className={`pos-press relative flex min-w-0 flex-1 items-center justify-center gap-1 rounded-lg px-1.5 py-2 text-[10px] font-semibold transition sm:px-2.5 sm:text-xs ${active ? 'bg-white text-slate-900 shadow-sm ring-1 ring-slate-200/80' : 'text-slate-500 hover:text-slate-800'}`}
           >
             <Icon className={`shrink-0 text-sm ${active ? 'text-emerald-600' : 'text-slate-400'}`} />
-            <span className="hidden truncate sm:inline">{tab.label}</span>
+            <span className="truncate">{tab.label}</span>
             {badge > 0 && (
-              <span className={`rounded-full px-1.5 py-0.5 text-[10px] font-bold tabular-nums ${active ? 'bg-emerald-600 text-white' : 'bg-slate-300 text-slate-700'}`}>
+              <span className={`rounded-full px-1.5 py-0.5 text-[9px] font-bold tabular-nums ${active ? 'bg-emerald-600 text-white' : 'bg-slate-300 text-slate-700'}`}>
                 {badge}
               </span>
             )}
@@ -1331,7 +1661,7 @@ const WorkspaceTabBar = ({ workspace, setWorkspace, itemCount, heldCount = 0 }) 
 )
 
 const CartView = ({
-  mode, cart, subtotal, discount, total, itemCount, changeQty, clearCart, setWorkspace, onHold, onOpenPayment, editingHeldOrderId,
+  mode, cart, subtotal, discount, total, itemCount, changeQty, setItemPrice, clearCart, setWorkspace, onHold, onOpenPayment, editingHeldOrderId,
 }) => (
     <div className="flex min-h-0 flex-1 flex-col">
       <div className="flex shrink-0 items-center justify-between border-b border-slate-100 px-3 py-2">
@@ -1368,38 +1698,47 @@ const CartView = ({
         ) : (
           <ul className="divide-y divide-slate-100 overflow-hidden rounded-lg border border-slate-200/80 bg-white">
             {cart.map((item) => (
-              <CartLineItem key={item.id} item={item} changeQty={changeQty} editingHeldOrderId={editingHeldOrderId} />
+              <CartLineItem key={item.id} item={item} changeQty={changeQty} setItemPrice={setItemPrice} isHeld={Boolean(editingHeldOrderId)} />
             ))}
           </ul>
         )}
       </div>
 
       {cart.length > 0 && (
-        <div className="shrink-0 border-t border-slate-200/80 bg-slate-50/50 px-3 py-3 shadow-[0_-6px_24px_rgba(15,23,42,0.08)]">
-          <div className="mb-2 flex items-baseline justify-between">
-            <span className="text-xs font-medium text-slate-500">Total due</span>
-            <span className="text-xl font-bold tabular-nums text-slate-900">{money(total)}</span>
-          </div>
+        <div className="shrink-0 border-t border-slate-200/80 bg-white px-3 pt-3 pb-3 shadow-[0_-8px_32px_rgba(15,23,42,0.10)]">
           {discount > 0 && (
-            <p className="mb-2 text-[10px] text-slate-500">Subtotal {money(subtotal)} · Discount −{money(discount)}</p>
+            <div className="mb-1.5 flex items-center justify-between text-[10px] text-slate-500">
+              <span>Subtotal</span>
+              <span className="tabular-nums">{money(subtotal)}</span>
+            </div>
           )}
+          {discount > 0 && (
+            <div className="mb-1.5 flex items-center justify-between text-[10px] font-semibold text-emerald-600">
+              <span>Discount</span>
+              <span className="tabular-nums">−{money(discount)}</span>
+            </div>
+          )}
+          <div className="mb-3 flex items-baseline justify-between">
+            <span className="text-xs font-semibold text-slate-500">Total due</span>
+            <span className="text-2xl font-black tabular-nums text-slate-950">{money(total)}</span>
+          </div>
 
-          <div className="grid grid-cols-2 gap-2">
+          <div className="grid grid-cols-2 gap-2.5">
             <button
               type="button"
               onClick={onHold}
-              className="pos-press flex h-11 items-center justify-center gap-2 rounded-xl border border-slate-300 bg-white text-sm font-semibold text-slate-800 shadow-sm hover:bg-slate-50"
+              className="pos-press flex h-12 items-center justify-center gap-2 rounded-2xl border-2 border-slate-200 bg-white text-sm font-semibold text-slate-700 hover:border-slate-300 hover:bg-slate-50 active:bg-slate-100"
             >
-              <FaPause className="text-slate-500" />
+              <FaPause className="text-slate-400" />
               {editingHeldOrderId ? 'Update hold' : 'Hold'}
             </button>
             <button
               type="button"
               onClick={onOpenPayment}
-              className="pos-press flex h-11 items-center justify-center gap-2 rounded-xl bg-emerald-600 text-sm font-bold text-white shadow-lg shadow-emerald-600/25 hover:bg-emerald-700"
+              className="pos-press flex h-12 items-center justify-center gap-2 rounded-2xl bg-emerald-600 text-sm font-bold text-white shadow-lg shadow-emerald-600/30 hover:bg-emerald-700 active:bg-emerald-800"
             >
               <FaCreditCard />
-              Pay
+              Pay now
             </button>
           </div>
         </div>
@@ -1407,48 +1746,108 @@ const CartView = ({
     </div>
 )
 
-const CartLineItem = ({ item, changeQty, editingHeldOrderId }) => (
-  <li className="group flex items-center gap-2.5 px-2.5 py-2.5 transition hover:bg-slate-50">
-    <div className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-lg text-[10px] font-bold text-white shadow-sm ${item.color}`}>
-      {item.letter}
-    </div>
-    <div className="min-w-0 flex-1">
-      <p className="line-clamp-2 text-xs font-semibold leading-snug text-slate-900 sm:truncate">{item.name}</p>
-      <p className="text-[10px] tabular-nums text-slate-500">{money(item.price)} each</p>
-    </div>
-    <div className="flex shrink-0 flex-col items-end gap-1">
-      <p className="text-xs font-bold tabular-nums text-slate-900">{money(item.price * item.qty)}</p>
-      <div className="flex items-center gap-1">
-        <div className="inline-flex h-8 items-center overflow-hidden rounded-lg border border-slate-200 bg-white shadow-sm">
-          <QtyButton onClick={() => changeQty(item.id, -1)} disabled={Boolean(editingHeldOrderId)} aria-label="Decrease">
-            <FaMinus className="text-[9px]" />
-          </QtyButton>
-          <span className="min-w-[1.75rem] border-x border-slate-200 bg-slate-50 px-1 text-center text-xs font-bold tabular-nums text-slate-900">
-            {item.qty}
-          </span>
-          <QtyButton onClick={() => changeQty(item.id, 1)} aria-label="Increase">
-            <FaPlus className="text-[9px]" />
-          </QtyButton>
-        </div>
-        <button
-          type="button"
-          onClick={() => changeQty(item.id, -item.qty)}
-          disabled={Boolean(editingHeldOrderId)}
-          className={`pos-press inline-flex h-8 w-8 items-center justify-center rounded-lg border border-transparent text-slate-400 ${editingHeldOrderId ? 'cursor-not-allowed bg-slate-100 text-slate-300' : 'hover:border-red-200 hover:bg-red-50 hover:text-red-600'}`}
-          aria-label="Remove item"
-        >
-          <FaTrash className="text-[10px]" />
-        </button>
+const CartLineItem = ({ item, changeQty, setItemPrice, isHeld }) => {
+  const [editingPrice, setEditingPrice] = useState(false)
+  const [priceInput, setPriceInput] = useState('')
+
+  const startEdit = () => {
+    if (isHeld) return
+    setPriceInput(String(item.price))
+    setEditingPrice(true)
+  }
+  const commitEdit = () => {
+    setItemPrice(item.id, priceInput)
+    setEditingPrice(false)
+  }
+
+  return (
+    <li className={`group flex items-start gap-2.5 px-3 py-3 transition ${isHeld ? 'bg-amber-50/60' : 'hover:bg-slate-50/80'}`}>
+      <div className={`mt-0.5 flex h-9 w-9 shrink-0 items-center justify-center rounded-xl text-[10px] font-bold text-white shadow-sm ${item.color}`}>
+        {item.letter}
       </div>
-    </div>
-  </li>
-)
+      <div className="min-w-0 flex-1">
+        <div className="flex items-start gap-1">
+          <p className="flex-1 text-xs font-semibold leading-snug text-slate-900 break-words">{item.name}</p>
+          {isHeld && <FaLock className="mt-0.5 shrink-0 text-[8px] text-amber-500" title="Held order — locked" />}
+        </div>
+
+        {editingPrice ? (
+          <div className="mt-1 flex items-center gap-1.5">
+            <input
+              type="number"
+              value={priceInput}
+              min="0"
+              step="0.01"
+              onChange={(e) => setPriceInput(e.target.value)}
+              onBlur={commitEdit}
+              onKeyDown={(e) => { if (e.key === 'Enter') commitEdit(); if (e.key === 'Escape') setEditingPrice(false) }}
+              autoFocus
+              className="w-24 rounded-lg border border-emerald-400 px-2 py-1 text-xs font-semibold tabular-nums outline-none focus:ring-2 focus:ring-emerald-400/30"
+            />
+            <button type="button" onClick={commitEdit} className="rounded-lg bg-emerald-600 px-2.5 py-1 text-[10px] font-bold text-white">OK</button>
+          </div>
+        ) : (
+          <button
+            type="button"
+            onClick={startEdit}
+            disabled={isHeld}
+            className={`mt-0.5 flex items-center gap-1 text-[10px] tabular-nums ${isHeld ? 'cursor-default text-slate-400' : 'group/price text-slate-500 hover:text-emerald-700'}`}
+          >
+            {money(item.price)} each
+            {!isHeld && <FaEdit className="text-[8px] opacity-0 group-hover/price:opacity-60 transition-opacity" />}
+          </button>
+        )}
+
+        {item.discountAmount > 0 && (
+          <p className="mt-0.5 text-[10px] font-semibold text-emerald-600">−{money(item.discountAmount)} ({item.appliedRule})</p>
+        )}
+
+        {/* Qty controls + total in one row */}
+        <div className="mt-2 flex items-center justify-between gap-2">
+          <div className="flex items-center gap-1.5">
+            <div className={`inline-flex h-9 items-center overflow-hidden rounded-xl border shadow-sm ${isHeld ? 'border-amber-200 bg-amber-50' : 'border-slate-200 bg-white'}`}>
+              <QtyButton onClick={() => changeQty(item.id, -1)} disabled={isHeld} aria-label="Decrease">
+                <FaMinus className="text-[9px]" />
+              </QtyButton>
+              <span className="min-w-[2rem] border-x border-slate-200 bg-slate-50 px-1 text-center text-xs font-bold tabular-nums text-slate-900">
+                {item.qty}
+              </span>
+              <QtyButton onClick={() => changeQty(item.id, 1)} disabled={isHeld} aria-label="Increase">
+                <FaPlus className="text-[9px]" />
+              </QtyButton>
+            </div>
+            <button
+              type="button"
+              onClick={() => changeQty(item.id, -item.qty)}
+              disabled={isHeld}
+              className={`pos-press inline-flex h-9 w-9 items-center justify-center rounded-xl border border-transparent ${isHeld ? 'cursor-not-allowed text-slate-300' : 'text-slate-400 hover:border-red-200 hover:bg-red-50 hover:text-red-600'}`}
+              aria-label="Remove item"
+            >
+              <FaTrash className="text-[10px]" />
+            </button>
+          </div>
+
+          <div className="flex flex-col items-end">
+            {item.discountAmount > 0 ? (
+              <>
+                <p className="text-[10px] tabular-nums text-slate-400 line-through">{money(item.price * item.qty)}</p>
+                <p className="text-sm font-bold tabular-nums text-emerald-700">{money(item.price * item.qty - item.discountAmount)}</p>
+              </>
+            ) : (
+              <p className="text-sm font-bold tabular-nums text-slate-900">{money(item.price * item.qty)}</p>
+            )}
+          </div>
+        </div>
+      </div>
+    </li>
+  )
+}
 
 const QtyButton = ({ children, onClick, ...props }) => (
   <button
     type="button"
     onClick={onClick}
-    className="pos-press flex h-8 w-8 items-center justify-center text-slate-600 hover:bg-slate-100 active:bg-slate-200"
+    className="pos-press flex h-9 w-9 items-center justify-center text-slate-600 hover:bg-slate-100 active:bg-slate-200"
     {...props}
   >
     {children}
@@ -1496,6 +1895,7 @@ const PaymentModal = ({
   shift,
   cartEmpty,
   branch,
+  effectivelyOnline = true,
 }) => (
   <PosModal title="Payment" onClose={onClose} wide>
     <div className="p-3 sm:p-4">
@@ -1525,6 +1925,7 @@ const PaymentModal = ({
         shift={shift}
         cartEmpty={cartEmpty}
         branch={branch}
+        effectivelyOnline={effectivelyOnline}
       />
     </div>
   </PosModal>
@@ -1551,11 +1952,14 @@ const PaymentCheckout = ({
   cartEmpty,
   branch,
   compact = false,
+  effectivelyOnline = true,
 }) => {
   const [stkState, setStkState] = useState({ status: 'idle', checkoutRequestId: '', message: '' })
   const [stkCountdown, setStkCountdown] = useState(null)
   const [stkRetrying, setStkRetrying] = useState(false)
   const [autoCompletingSale, setAutoCompletingSale] = useState(false)
+  const stkAbortRef = useRef(false)
+  useEffect(() => () => { stkAbortRef.current = true }, [])
   const tendered = Number(cashTendered || 0)
   const changeDue = paymentMode === 'cash' ? Math.max(0, tendered - total) : 0
   const splitCash = Number(cashTendered || 0)
@@ -1611,6 +2015,7 @@ const PaymentCheckout = ({
   }
 
   const sendAndWatchStk = async () => {
+    stkAbortRef.current = false
     setStkState({ status: 'sending', checkoutRequestId: '', message: 'Sending STK to the customer phone...' })
     setStkCountdown(40)
     setStkRetrying(false)
@@ -1675,6 +2080,7 @@ const PaymentCheckout = ({
         }
 
         await wait(1000)
+        if (stkAbortRef.current) return
         elapsed += 1
         setStkCountdown(40 - elapsed)
       }
@@ -1710,6 +2116,7 @@ const PaymentCheckout = ({
         while (waitSeconds > 0) {
           setStkCountdown(waitSeconds)
           await wait(1000)
+          if (stkAbortRef.current) return
           waitSeconds -= 1
         }
 
@@ -1941,8 +2348,7 @@ const PaymentCheckout = ({
               disabled={cartEmpty || busy || directPolling || !shift || !mpesaDirectEnabled}
               className="pos-press flex h-11 w-full items-center justify-center gap-2 rounded-xl bg-sky-600 px-4 text-sm font-bold text-white shadow-sm hover:bg-sky-700 disabled:cursor-not-allowed disabled:bg-slate-200 disabled:text-slate-400"
             >
-              <FaMobileAlt />
-              {directPolling ? 'Fetching...' : 'Fetch payment'}
+              {directPolling ? <DotLoader color="white" /> : <><FaMobileAlt /><span>Fetch payment</span></>}
             </button>
             <div className={`rounded-xl px-3 py-2 text-xs font-semibold ${directState.status === 'paid' ? 'bg-emerald-50 text-emerald-800 ring-1 ring-emerald-200' : directState.status === 'failed' || directState.status === 'timeout' ? 'bg-amber-50 text-amber-800 ring-1 ring-amber-200' : 'bg-slate-50 text-slate-600 ring-1 ring-slate-200'}`}>
               {directState.message || (mpesaDirectEnabled ? 'Ready to verify direct till payment.' : 'Direct till verification is not configured for this branch.')}
@@ -2020,18 +2426,17 @@ const PaymentCheckout = ({
                     disabled={cartEmpty || busy || autoCompletingSale || !shift || stkIsBusy || stkIsPaid}
                     className={`pos-press flex h-11 shrink-0 items-center justify-center gap-2 rounded-xl px-4 text-sm font-bold shadow-sm disabled:cursor-not-allowed disabled:bg-slate-200 disabled:text-slate-400 ${stkIsPaid ? 'bg-emerald-600 text-white' : 'bg-sky-600 text-white hover:bg-sky-700'}`}
                   >
-                    <FaMobileAlt />
-                    {stkState.status === 'sending'
-                      ? 'Sending...'
-                      : stkState.status === 'querying'
-                        ? 'Querying...'
-                        : stkIsPaid
-                          ? 'Confirmed'
-                          : stkIsBusy
-                            ? 'Waiting...'
+                    {(stkState.status === 'sending' || stkState.status === 'querying' || stkIsBusy) && !stkIsPaid
+                      ? <DotLoader color="white" />
+                      : <>
+                          <FaMobileAlt />
+                          {stkIsPaid
+                            ? 'Confirmed'
                             : stkState.status === 'failed' || stkState.status === 'timeout'
                               ? 'Send again'
                               : 'Send STK'}
+                        </>
+                    }
                   </button>
                   {mpesaManualApprovalEnabled && !stkIsPaid && (
                     <button
@@ -2040,8 +2445,18 @@ const PaymentCheckout = ({
                       disabled={cartEmpty || busy || autoCompletingSale || !shift || stkIsBusy}
                       className="pos-press flex h-11 shrink-0 items-center justify-center gap-2 rounded-xl bg-amber-500 px-4 text-sm font-bold text-white shadow-sm hover:bg-amber-600 disabled:cursor-not-allowed disabled:bg-slate-200 disabled:text-slate-400"
                     >
-                      <FaCheck />
-                      Approve without Safaricom
+                      {(busy || autoCompletingSale) ? <DotLoader color="white" /> : <><FaCheck /><span>Approve without Safaricom</span></>}
+                    </button>
+                  )}
+                  {!effectivelyOnline && !stkIsPaid && (
+                    <button
+                      type="button"
+                      onClick={() => onCheckout({ offline_mpesa: true })}
+                      disabled={cartEmpty || busy || !shift}
+                      title="You are offline. Confirm you physically received this M-Pesa payment."
+                      className="pos-press flex h-11 shrink-0 items-center justify-center gap-2 rounded-xl bg-orange-600 px-4 text-sm font-bold text-white shadow-sm hover:bg-orange-700 disabled:cursor-not-allowed disabled:bg-slate-200 disabled:text-slate-400"
+                    >
+                      {busy ? <DotLoader color="white" /> : <><FaCheck /><span>Confirm M-Pesa offline</span></>}
                     </button>
                   )}
                 </div>
@@ -2056,8 +2471,7 @@ const PaymentCheckout = ({
           disabled={!canCompleteSale}
           className="pos-press mt-1 flex h-14 w-full items-center justify-center gap-2.5 rounded-2xl bg-emerald-600 text-base font-bold text-white shadow-lg shadow-emerald-600/25 hover:bg-emerald-700 disabled:cursor-not-allowed disabled:bg-slate-200 disabled:text-slate-400 disabled:shadow-none"
         >
-          <FaCheck className="text-lg" />
-          {completeLabel}
+          {(busy || autoCompletingSale) ? <DotLoader color="white" /> : <><FaCheck className="text-lg" />{completeLabel}</>}
         </button>
       </div>
     </div>
@@ -2292,12 +2706,18 @@ const EnhancedReceiptModal = ({ receipt, onClose, onVoid, onVoidLine, onReprint,
   const voided = receipt.status === 'Voided'
   const payments = receipt.payments?.length ? receipt.payments : [{ method: receipt.method, amount: receipt.paid || receipt.amount }]
   const printReceipt = () => {
-    const rows = receipt.items.map((item) => `
-      <tr>
-        <td><strong>${escapeHtml(item.name)}</strong><span>${item.qty} x ${receiptMoney(item.price)}</span></td>
-        <td>${receiptMoney(item.qty * item.price)}</td>
-      </tr>
-    `).join('')
+    const rows = receipt.items.map((item) => {
+      const gross = item.qty * item.price
+      const disc = item.discountAmount || 0
+      const net = gross - disc
+      const discLabel = disc > 0 ? `<span style="color:#16a34a;font-size:10px">Discount${item.appliedRule ? ` (${escapeHtml(item.appliedRule)})` : ''}: -${receiptMoney(disc)}</span>` : ''
+      return `
+        <tr>
+          <td><strong>${escapeHtml(item.name)}</strong><span>${item.qty} x ${receiptMoney(item.price)}</span>${discLabel}</td>
+          <td>${receiptMoney(net)}</td>
+        </tr>
+      `
+    }).join('')
     const paymentRows = payments.map((payment) => `
       <div class="row"><span>${escapeHtml(payment.method || 'Payment')}</span><strong>${receiptMoney(payment.amount)}</strong></div>
     `).join('')
@@ -2364,9 +2784,16 @@ const EnhancedReceiptModal = ({ receipt, onClose, onVoid, onVoidLine, onReprint,
                 <div className="min-w-0 flex-1">
                   <p className="text-sm font-bold leading-snug text-slate-950">{item.name}</p>
                   <p className="mt-0.5 text-[11px] font-medium tabular-nums text-slate-500">{item.qty} x {money(item.price)}</p>
+                  {(item.discountAmount > 0) && (
+                    <p className="mt-0.5 text-[10px] font-semibold text-emerald-600">
+                      -{money(item.discountAmount)}{item.appliedRule ? ` · ${item.appliedRule}` : ''}
+                    </p>
+                  )}
                 </div>
                 <div className="shrink-0 text-right">
-                  <p className="text-sm font-black tabular-nums">{money(item.qty * item.price)}</p>
+                  {item.discountAmount > 0
+                    ? (<><p className="text-[11px] tabular-nums text-slate-400 line-through">{money(item.qty * item.price)}</p><p className="text-sm font-black tabular-nums text-emerald-700">{money(item.qty * item.price - item.discountAmount)}</p></>)
+                    : <p className="text-sm font-black tabular-nums">{money(item.qty * item.price)}</p>}
                   {!voided && canVoidLine && item.productId && (
                     <button type="button" disabled={busy} onClick={() => onVoidLine?.(receipt, item)} className="pos-press mt-1 rounded-lg px-2 py-1 text-[10px] font-semibold text-red-600 ring-1 ring-red-200 hover:bg-red-50 disabled:opacity-50">
                       Void line
@@ -2524,9 +2951,8 @@ const EndShiftView = ({ shift, openingCash, setOpeningCash, countedCash, setCoun
             <input value={countedCash} onChange={(event) => setCountedCash(event.target.value)} type="number" className="mt-1 h-10 w-full rounded border border-slate-300 px-3 text-sm font-bold" />
           </label>
         </div>
-        <button onClick={onCloseShift} disabled={busy} className="mt-4 flex h-11 w-full items-center justify-center rounded bg-red-600 text-xs font-black uppercase text-white disabled:bg-red-200">
-          <FaLock className="mr-2" />
-          {busy ? 'Closing...' : 'Close Shift'}
+        <button onClick={onCloseShift} disabled={busy} className="mt-4 flex h-11 w-full items-center justify-center gap-2 rounded bg-red-600 text-xs font-black uppercase text-white disabled:bg-red-200">
+          {busy ? <DotLoader color="white" /> : <><FaLock /><span>Close Shift</span></>}
         </button>
       </>
     ) : (
@@ -2537,9 +2963,8 @@ const EndShiftView = ({ shift, openingCash, setOpeningCash, countedCash, setCoun
             <input value={openingCash} onChange={(event) => setOpeningCash(event.target.value)} type="number" className="mt-1 h-11 w-full rounded border border-slate-300 px-3 text-sm font-bold" />
           </label>
         </div>
-        <button onClick={onOpenShift} disabled={busy} className="mt-4 flex h-11 w-full items-center justify-center rounded bg-emerald-600 text-xs font-black uppercase text-white disabled:bg-emerald-200">
-          <FaLock className="mr-2" />
-          {busy ? 'Opening...' : 'Open Shift'}
+        <button onClick={onOpenShift} disabled={busy} className="mt-4 flex h-11 w-full items-center justify-center gap-2 rounded bg-emerald-600 text-xs font-black uppercase text-white disabled:bg-emerald-200">
+          {busy ? <DotLoader color="white" /> : <><FaLock /><span>Open Shift</span></>}
         </button>
       </>
     )}
@@ -2577,40 +3002,50 @@ const Metric = ({ label, value }) => (
 )
 
 const MobileDock = ({ itemCount, total, shift, onCart, onPay, onWorkspace }) => (
-  <div className="fixed inset-x-0 bottom-0 z-30 border-t border-slate-200/80 pos-glass px-2.5 pb-[max(0.625rem,env(safe-area-inset-bottom))] pt-2 shadow-[0_-12px_40px_rgba(15,23,42,0.14)] lg:hidden">
-    <div className={`grid gap-2 ${itemCount > 0 ? 'grid-cols-[1fr_1.35fr_1fr]' : 'grid-cols-2'}`}>
+  <div className="fixed inset-x-0 bottom-0 z-30 border-t border-slate-200/60 pos-glass px-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] pt-2.5 shadow-[0_-12px_40px_rgba(15,23,42,0.14)] lg:hidden">
+    <div className={`grid gap-2.5 ${itemCount > 0 ? 'grid-cols-[1fr_1.5fr_1fr]' : 'grid-cols-2'}`}>
+      {/* Cart button with count badge */}
       <button
         type="button"
         onClick={onCart}
-        className="pos-press flex h-14 flex-col items-center justify-center gap-0.5 rounded-2xl bg-slate-100 px-2 text-slate-800 ring-1 ring-slate-200/80"
+        className="pos-press relative flex h-14 flex-col items-center justify-center gap-0.5 rounded-2xl bg-slate-100 px-2 text-slate-800 ring-1 ring-slate-200/80 active:bg-slate-200"
       >
         <FaShoppingBag className="text-lg" />
-        <span className="text-[10px] font-semibold">Cart {itemCount}</span>
+        <span className="text-[10px] font-semibold">Cart</span>
+        {itemCount > 0 && (
+          <span className="absolute -right-1 -top-1 flex h-5 min-w-[1.25rem] items-center justify-center rounded-full bg-emerald-600 px-1 text-[9px] font-black text-white shadow">
+            {itemCount}
+          </span>
+        )}
       </button>
+
+      {/* Pay — only when items in cart */}
       {itemCount > 0 && (
         <button
           type="button"
           onClick={onPay}
-          className="pos-press flex h-14 min-w-0 flex-col items-center justify-center gap-0.5 rounded-2xl bg-emerald-600 px-2 text-white shadow-md"
+          className="pos-press flex h-14 min-w-0 flex-col items-center justify-center gap-0.5 rounded-2xl bg-emerald-600 px-2 text-white shadow-lg shadow-emerald-600/30 active:bg-emerald-700"
         >
           <FaCreditCard className="text-lg" />
-          <span className="max-w-full truncate text-[10px] font-bold tabular-nums">{money(total)}</span>
+          <span className="max-w-full truncate text-[10px] font-black tabular-nums">{money(total)}</span>
         </button>
       )}
+
+      {/* Workspace / menu */}
       <button
         type="button"
         onClick={onWorkspace}
-        className="pos-press flex h-14 flex-col items-center justify-center gap-0.5 rounded-2xl bg-slate-900 px-2 text-white"
+        className="pos-press flex h-14 flex-col items-center justify-center gap-0.5 rounded-2xl bg-slate-900 px-2 text-white active:bg-slate-800"
       >
         <FaBars className="text-lg" />
         <span className="text-[10px] font-semibold">Menu</span>
-        {!shift && <span className="text-[9px] text-amber-400">No shift</span>}
+        {!shift && <span className="text-[8px] font-semibold text-amber-400">No shift</span>}
       </button>
     </div>
   </div>
 )
 
-const MobileSheet = ({ title, children, onClose }) => (
+const MobileSheet = ({ title, children, onClose, nativeScroll = true }) => (
   <div className="fixed inset-0 z-50 lg:hidden">
     <div className="absolute inset-0 bg-slate-950/60 backdrop-blur-sm" onClick={onClose} aria-hidden />
     <div className="absolute inset-x-0 bottom-0 flex max-h-[94dvh] flex-col overflow-hidden rounded-t-3xl bg-white shadow-2xl">
@@ -2621,7 +3056,8 @@ const MobileSheet = ({ title, children, onClose }) => (
           <FaTimes />
         </button>
       </div>
-      <div className="min-h-0 flex-1 overflow-y-auto pb-[env(safe-area-inset-bottom)]">{children}</div>
+      {/* nativeScroll=false lets the child manage its own internal scroll (e.g. WorkspacePanel) */}
+      <div className={`min-h-0 flex-1 pb-[env(safe-area-inset-bottom)] ${nativeScroll ? 'overflow-y-auto' : 'flex flex-col overflow-hidden'}`}>{children}</div>
     </div>
   </div>
 )

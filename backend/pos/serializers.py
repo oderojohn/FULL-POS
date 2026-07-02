@@ -13,6 +13,7 @@ from .models import (
     HeldOrderItem,
     InventoryStock,
     Payment,
+    PermissionGroup,
     Product,
     PurchaseOrder,
     PurchaseOrderItem,
@@ -30,6 +31,7 @@ from .models import (
     UserProfile,
     MpesaDirectPaymentLog,
     MpesaStkLog,
+    ReportSchedule,
 )
 from .permissions import get_pos_profile, is_super_admin, profile_company, user_can_access_branch
 from .rbac import ALL_PERMISSION_CODES, permissions_for_profile
@@ -160,6 +162,26 @@ class BranchSerializer(serializers.ModelSerializer):
         )
 
 
+class PermissionGroupSerializer(serializers.ModelSerializer):
+    member_count = serializers.SerializerMethodField()
+
+    class Meta:
+        model = PermissionGroup
+        fields = ['id', 'company', 'name', 'description', 'permissions', 'member_count', 'created_at', 'updated_at']
+        read_only_fields = ['id', 'created_at', 'updated_at']
+
+    def get_member_count(self, obj):
+        return obj.members.count()
+
+    def validate_permissions(self, value):
+        if not isinstance(value, list):
+            raise serializers.ValidationError("Must be a list of permission codes.")
+        invalid = sorted(set(value) - set(ALL_PERMISSION_CODES))
+        if invalid:
+            raise serializers.ValidationError(f"Unknown permission codes: {', '.join(invalid)}")
+        return value
+
+
 class UserProfileSerializer(serializers.ModelSerializer):
     username = serializers.CharField(source="user.username")
     first_name = serializers.CharField(source="user.first_name", required=False, allow_blank=True)
@@ -169,23 +191,27 @@ class UserProfileSerializer(serializers.ModelSerializer):
     last_login = serializers.DateTimeField(source="user.last_login", read_only=True)
     password = serializers.CharField(write_only=True, required=False, allow_blank=True, trim_whitespace=False)
     effective_permissions = serializers.SerializerMethodField()
+    permission_groups = serializers.PrimaryKeyRelatedField(
+        many=True, queryset=PermissionGroup.objects.all(), required=False
+    )
 
     class Meta:
         model = UserProfile
         fields = (
             "id", "user", "username", "first_name", "last_name", "email", "full_name",
-            "last_login", "password", "pin", "role", "access_level", "branch", "company",
-            "custom_permissions", "use_custom_permissions", "effective_permissions",
-            "is_active", "created_at", "updated_at"
+            "last_login", "password", "pin", "pos_username", "role", "access_level",
+            "branch", "company", "custom_permissions", "use_custom_permissions",
+            "permission_groups", "effective_permissions", "is_active", "created_at", "updated_at"
         )
         extra_kwargs = {
             "user": {"required": False},
             "pin": {"write_only": True, "required": False, "allow_blank": True},
+            "pos_username": {"required": False, "allow_blank": True},
         }
 
     def get_effective_permissions(self, profile):
         perms = permissions_for_profile(profile)
-        if profile.user.is_superuser or (profile.role == UserProfile.ADMIN and not profile.use_custom_permissions):
+        if profile.user.is_superuser or "*" in perms:
             return ALL_PERMISSION_CODES
         return perms
 
@@ -204,6 +230,17 @@ class UserProfileSerializer(serializers.ModelSerializer):
                 raise serializers.ValidationError(required)
         if branch and company and branch.company_id != company.id:
             raise serializers.ValidationError({"branch": "Branch must belong to the selected company."})
+
+        # Validate pos_username uniqueness per company
+        pos_username = attrs.get("pos_username", "")
+        if pos_username:
+            resolved_company = company or (branch.company if branch else None)
+            if resolved_company:
+                qs = UserProfile.objects.filter(company=resolved_company, pos_username=pos_username)
+                if self.instance:
+                    qs = qs.exclude(pk=self.instance.pk)
+                if qs.exists():
+                    raise serializers.ValidationError({"pos_username": "This username is already taken in this company."})
 
         user = _request_user(self.context)
         if not user or not user.is_authenticated:
@@ -224,13 +261,39 @@ class UserProfileSerializer(serializers.ModelSerializer):
         return attrs
 
     def create(self, validated_data):
+        from django.contrib.auth.hashers import make_password as _hash
         user_data = validated_data.pop("user", {})
         password = validated_data.pop("password", "")
-        username = user_data.get("username")
-        if not username:
+        permission_groups_list = validated_data.pop("permission_groups", [])
+        pin = validated_data.get("pin", "")
+        if pin:
+            validated_data["pin"] = _hash(pin)
+
+        branch = validated_data.get("branch")
+        if branch and not validated_data.get("company"):
+            validated_data["company"] = branch.company
+        company = validated_data.get("company")
+
+        pos_username = validated_data.get("pos_username", "")
+        display_username = user_data.get("username", "")
+
+        if not display_username and not pos_username:
             raise serializers.ValidationError({"username": "Username is required."})
+
         user_model = get_user_model()
-        if user_model.objects.filter(username=username).exists():
+
+        # Auto-generate a globally unique Django username when only pos_username is set.
+        if pos_username and company:
+            django_username = f"co{company.id}_{pos_username}"[:150]
+            if not display_username:
+                user_data["username"] = django_username
+        else:
+            # Legacy path: Django username IS the display username.
+            django_username = display_username
+            if pos_username == "" and display_username:
+                validated_data["pos_username"] = display_username
+
+        if user_model.objects.filter(username=user_data.get("username", django_username)).exists():
             raise serializers.ValidationError({"username": "A user with this username already exists."})
 
         user = user_model(**user_data)
@@ -241,14 +304,22 @@ class UserProfileSerializer(serializers.ModelSerializer):
         user.is_active = validated_data.get("is_active", True)
         user.save()
 
-        branch = validated_data.get("branch")
-        if branch and not validated_data.get("company"):
-            validated_data["company"] = branch.company
-        return UserProfile.objects.create(user=user, **validated_data)
+        profile = UserProfile.objects.create(user=user, **validated_data)
+        if permission_groups_list:
+            profile.permission_groups.set(permission_groups_list)
+        return profile
 
     def update(self, instance, validated_data):
+        from django.contrib.auth.hashers import make_password as _hash
         user_data = validated_data.pop("user", None)
         password = validated_data.pop("password", None)
+        permission_groups_list = validated_data.pop("permission_groups", None)
+        pin = validated_data.get("pin", "")
+        if pin:
+            validated_data["pin"] = _hash(pin)
+        elif "pin" in validated_data:
+            # Empty pin in update = keep existing pin unchanged
+            validated_data.pop("pin")
 
         if user_data:
             username = user_data.get("username")
@@ -272,7 +343,10 @@ class UserProfileSerializer(serializers.ModelSerializer):
             instance.user.is_active = validated_data["is_active"]
             instance.user.save(update_fields=["is_active"])
 
-        return super().update(instance, validated_data)
+        instance = super().update(instance, validated_data)
+        if permission_groups_list is not None:
+            instance.permission_groups.set(permission_groups_list)
+        return instance
 
 
 class CompanySettingsSerializer(serializers.ModelSerializer):
@@ -284,7 +358,7 @@ class CompanySettingsSerializer(serializers.ModelSerializer):
             "id", "company", "company_name",
             "security", "system", "pos_operations", "stock_controls",
             "notifications", "financial", "pricing", "backup",
-            "integrations", "super_admin",
+            "integrations", "super_admin", "email_config", "cloud_config",
             "created_at", "updated_at",
         )
         read_only_fields = ("company", "created_at", "updated_at")
@@ -294,6 +368,7 @@ class LoginSerializer(serializers.Serializer):
     username = serializers.CharField()
     password = serializers.CharField(required=False, allow_blank=True, trim_whitespace=False)
     pin = serializers.CharField(required=False, allow_blank=True, trim_whitespace=False)
+    company_code = serializers.CharField(required=False, allow_blank=True)
 
 
 class RegisterSerializer(serializers.ModelSerializer):
@@ -383,9 +458,11 @@ class ProductSerializer(serializers.ModelSerializer):
 
     def get_stock(self, product):
         branch_id = self.context.get("branch_id")
+        # Use the prefetch cache — filtering with .filter() bypasses it and fires N extra queries
         rows = product.stock_rows.all()
         if branch_id:
-            rows = rows.filter(branch_id=branch_id)
+            bid = int(branch_id)
+            return sum(row.quantity for row in rows if row.branch_id == bid)
         return sum(row.quantity for row in rows)
 
     def validate_category(self, value):
@@ -567,6 +644,9 @@ class CheckoutSerializer(serializers.Serializer):
     mpesa_checkout_request_id = serializers.CharField(required=False, allow_blank=True)
     mpesa_direct_transaction_id = serializers.CharField(required=False, allow_blank=True)
     mpesa_manual_approval = serializers.BooleanField(required=False, default=False)
+    # Offline-sync fields — sent by desktop POS when re-uploading locally-created sales
+    device_id = serializers.CharField(required=False, allow_blank=True, max_length=64)
+    receipt_no = serializers.CharField(required=False, allow_blank=True, max_length=40)
 
     def validate(self, attrs):
         branch = attrs["branch"]
@@ -584,11 +664,10 @@ class CheckoutSerializer(serializers.Serializer):
 
 class VoidSaleSerializer(serializers.Serializer):
     reason = serializers.CharField(max_length=240)
-    user = serializers.PrimaryKeyRelatedField(queryset=get_user_model().objects.all())
 
 
 class ReprintReceiptSerializer(serializers.Serializer):
-    user = serializers.PrimaryKeyRelatedField(queryset=get_user_model().objects.all(), required=False, allow_null=True)
+    pass
 
 
 class SaleReturnItemSerializer(serializers.ModelSerializer):
@@ -618,7 +697,6 @@ class CreateSaleReturnItemSerializer(serializers.Serializer):
 
 class CreateSaleReturnSerializer(serializers.Serializer):
     sale = serializers.PrimaryKeyRelatedField(queryset=Sale.objects.filter(status=Sale.PAID))
-    processed_by = serializers.PrimaryKeyRelatedField(queryset=get_user_model().objects.all())
     reason = serializers.CharField(max_length=240)
     refund_method = serializers.ChoiceField(choices=Payment.METHOD_CHOICES, default=Payment.CASH)
     shift = serializers.PrimaryKeyRelatedField(queryset=Shift.objects.filter(status=Shift.OPEN), required=False, allow_null=True)
@@ -637,16 +715,15 @@ class CreateSaleReturnSerializer(serializers.Serializer):
 
 
 class ApproveSaleReturnSerializer(serializers.Serializer):
-    user = serializers.PrimaryKeyRelatedField(queryset=get_user_model().objects.all())
+    pass
 
 
 class RejectSaleReturnSerializer(serializers.Serializer):
-    user = serializers.PrimaryKeyRelatedField(queryset=get_user_model().objects.all())
     reason = serializers.CharField(max_length=240, required=False, allow_blank=True)
 
 
 class CompleteSaleReturnSerializer(serializers.Serializer):
-    user = serializers.PrimaryKeyRelatedField(queryset=get_user_model().objects.all())
+    pass
 
 
 class CashTransactionSerializer(serializers.ModelSerializer):
@@ -777,6 +854,15 @@ class UpdateHoldOrderSerializer(serializers.Serializer):
 
 class StockMovementSerializer(serializers.ModelSerializer):
     product_name = serializers.CharField(source="product.name", read_only=True)
+    product_sku = serializers.CharField(source="product.sku", read_only=True)
+    user_display = serializers.SerializerMethodField()
+    branch_name = serializers.CharField(source="branch.name", read_only=True)
+
+    def get_user_display(self, obj):
+        if not obj.user_id:
+            return "System"
+        u = obj.user
+        return u.get_full_name() or u.username
 
     class Meta:
         model = StockMovement
@@ -891,6 +977,22 @@ class StocktakeItemSerializer(serializers.ModelSerializer):
 
 class StocktakeSessionSerializer(serializers.ModelSerializer):
     items = StocktakeItemSerializer(many=True, read_only=True)
+    branch_name = serializers.CharField(source="branch.name", read_only=True)
+    branch_code = serializers.CharField(source="branch.code", read_only=True)
+    created_by_name = serializers.SerializerMethodField()
+    approved_by_name = serializers.SerializerMethodField()
+
+    def get_created_by_name(self, obj):
+        if not obj.created_by_id:
+            return None
+        u = obj.created_by
+        return u.get_full_name() or u.username
+
+    def get_approved_by_name(self, obj):
+        if not obj.approved_by_id:
+            return None
+        u = obj.approved_by
+        return u.get_full_name() or u.username
 
     class Meta:
         model = StocktakeSession
@@ -1027,3 +1129,42 @@ class MpesaDirectPaymentLogSerializer(serializers.ModelSerializer):
             'request', 'response', 'success', 'message', 'originator_conversation_id',
             'conversation_id', 'result_code', 'result_desc', 'created_at',
         )
+
+
+class ReportScheduleSerializer(serializers.ModelSerializer):
+    branch_name = serializers.CharField(source='branch.name', read_only=True)
+    last_sent_at = serializers.DateTimeField(read_only=True)
+
+    class Meta:
+        model = ReportSchedule
+        fields = (
+            'id', 'branch', 'branch_name', 'report_type', 'is_enabled',
+            'send_hour', 'send_minute', 'send_day_of_week', 'send_day_of_month',
+            'recipients', 'include_gross_profit', 'include_cashier_breakdown',
+            'include_payment_methods', 'include_top_products', 'include_returns',
+            'last_sent_at', 'created_at', 'updated_at',
+        )
+        read_only_fields = ('last_sent_at', 'created_at', 'updated_at')
+
+    def validate_recipients(self, value):
+        if not isinstance(value, list):
+            raise serializers.ValidationError("Recipients must be a list of email addresses.")
+        for email in value:
+            serializers.EmailField().run_validation(email)
+        return value
+
+    def validate_send_hour(self, value):
+        if not 0 <= value <= 23:
+            raise serializers.ValidationError("Hour must be 0-23.")
+        return value
+
+    def validate_send_minute(self, value):
+        if not 0 <= value <= 59:
+            raise serializers.ValidationError("Minute must be 0-59.")
+        return value
+
+    def validate_send_day_of_month(self, value):
+        if value is not None and not 1 <= value <= 31:
+            raise serializers.ValidationError("Day of month must be 1-31.")
+        return value
+

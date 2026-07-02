@@ -33,13 +33,23 @@ def quantize_money(value):
     return Decimal(value).quantize(MONEY, rounding=ROUND_HALF_UP)
 
 
-def next_receipt_no(branch):
+def next_receipt_no(branch, device_id=None):
     today = timezone.localdate().strftime("%Y%m%d")
-    prefix = f"{branch.code}-{today}-"
+    # Device-prefixed numbering prevents collisions between offline devices.
+    # Online (server-generated): {BRANCH}-{DATE}-NNNN
+    # Offline (device-generated): {BRANCH}-{DEV8}-{DATE}-NNNN
+    if device_id:
+        safe_dev = device_id[:8].replace("-", "").upper()
+        prefix = f"{branch.code}-{safe_dev}-{today}-"
+    else:
+        prefix = f"{branch.code}-{today}-"
     latest = Sale.objects.filter(receipt_no__startswith=prefix).aggregate(value=Max("receipt_no"))["value"]
     next_number = 1
     if latest:
-        next_number = int(latest.rsplit("-", 1)[1]) + 1
+        try:
+            next_number = int(latest.rsplit("-", 1)[1]) + 1
+        except (ValueError, IndexError):
+            next_number = 1
     return f"{prefix}{next_number:04d}"
 
 
@@ -79,7 +89,7 @@ def require_open_shift(shift):
 
 
 @transaction.atomic
-def checkout_sale(*, cashier, branch, register, shift, customer=None, mode=Sale.RETAIL, items=None, payments=None):
+def checkout_sale(*, cashier, branch, register, shift, customer=None, mode=Sale.RETAIL, items=None, payments=None, device_id=None, receipt_no=None):
     branch = Branch.objects.select_for_update().get(pk=branch.pk)
     shift = Shift.objects.select_for_update().get(pk=shift.pk)
     require_open_shift(shift)
@@ -93,7 +103,12 @@ def checkout_sale(*, cashier, branch, register, shift, customer=None, mode=Sale.
     if not payments:
         raise ValidationError({"payments": "At least one payment is required."})
 
-    receipt_no = next_receipt_no(branch)
+    if receipt_no:
+        if Sale.objects.filter(receipt_no=receipt_no).exists():
+            raise ValidationError({"receipt_no": f"Receipt {receipt_no} already exists — duplicate sync upload."})
+    else:
+        receipt_no = next_receipt_no(branch, device_id=device_id)
+
     sale = Sale.objects.create(
         receipt_no=receipt_no,
         branch=branch,
@@ -103,6 +118,7 @@ def checkout_sale(*, cashier, branch, register, shift, customer=None, mode=Sale.
         customer=customer,
         mode=mode,
         status=Sale.PAID,
+        device_id=device_id or "",
     )
 
     subtotal = Decimal("0.00")
