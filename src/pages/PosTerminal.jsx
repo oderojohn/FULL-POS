@@ -110,6 +110,7 @@ const PosTerminal = () => {
   const [apiCategories, setApiCategories] = useState([])
   const [apiCustomers, setApiCustomers] = useState([])
   const [apiSales, setApiSales] = useState([])
+  const [apiCreditRepayments, setApiCreditRepayments] = useState([])
   const [activeDiscountRules, setActiveDiscountRules] = useState([])
   const [branch, setBranch] = useState(null)
   const [registers, setRegisters] = useState([])
@@ -146,6 +147,7 @@ const PosTerminal = () => {
   const [receiptModal, setReceiptModal] = useState(null)
   const [saleConfirmation, setSaleConfirmation] = useState(null)
   const [addLoyaltyModal, setAddLoyaltyModal] = useState(null)
+  const [repayCreditModalOpen, setRepayCreditModalOpen] = useState(false)
   const [creditLimitOverridable, setCreditLimitOverridable] = useState(false)
   const [editingHeldOrderId, setEditingHeldOrderId] = useState(null)
   const [heldOrderBaseline, setHeldOrderBaseline] = useState({})
@@ -153,12 +155,14 @@ const PosTerminal = () => {
   const loadShiftSales = async (branchId, shiftId) => {
     if (!branchId || !shiftId) {
       setApiSales([])
+      setApiCreditRepayments([])
       return
     }
     const base = { branch: branchId, shift: shiftId, page_size: 200 }
-    const [paidResponse, voidedResponse] = await Promise.all([
+    const [paidResponse, voidedResponse, repaymentsResponse] = await Promise.all([
       posApi.sales({ ...base, status: 'paid' }),
       posApi.sales({ ...base, status: 'voided' }),
+      posApi.creditPaymentHistoryReport({ branch: branchId, shift: shiftId }).catch(() => []),
     ])
     const paid = paidResponse.results || paidResponse
     const voided = voidedResponse.results || voidedResponse
@@ -166,6 +170,7 @@ const PosTerminal = () => {
       (a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime(),
     )
     setApiSales(merged)
+    setApiCreditRepayments(Array.isArray(repaymentsResponse) ? repaymentsResponse : [])
   }
 
   const refreshApiData = async (branchOverride = branch || authBranch, shiftOverride = shift) => {
@@ -430,22 +435,44 @@ const PosTerminal = () => {
     }
   }, [selectedCustomer?.id, paymentMode])
 
+  const canVoidHeldItems = can('*') || can('sale.void')
+  const isHeldBaselineItem = useCallback((item) => (
+    Boolean(editingHeldOrderId) && Object.prototype.hasOwnProperty.call(heldOrderBaseline, String(item.productId || item.id))
+  ), [editingHeldOrderId, heldOrderBaseline])
+
   const changeQty = useCallback((id, delta) => {
-    if (editingHeldOrderId) {
-      setStatusMessage('Items from a held order cannot be edited. Clear the cart to start fresh.')
-      return
-    }
-    setCart((current) => current
-      .map((item) => item.id === id ? { ...item, qty: Math.max(1, Math.min(item.qty + delta, item.stock || 99)) } : item)
-    )
-  }, [editingHeldOrderId])
+    setCart((current) => {
+      const item = current.find((i) => i.id === id)
+      if (!item) return current
+      if (isHeldBaselineItem(item) && delta < 0 && !canVoidHeldItems) {
+        setStatusMessage('Items from a held order can only be reduced or removed by a user with void permission.')
+        return current
+      }
+      return current.map((i) => i.id === id ? { ...i, qty: Math.max(1, Math.min(i.qty + delta, i.stock || 99)) } : i)
+    })
+  }, [isHeldBaselineItem, canVoidHeldItems])
+
+  const removeCartItem = useCallback((id) => {
+    setCart((current) => {
+      const item = current.find((i) => i.id === id)
+      if (!item) return current
+      if (isHeldBaselineItem(item) && !canVoidHeldItems) {
+        setStatusMessage('Only a user with void permission can remove an item that came from a held order.')
+        return current
+      }
+      return current.filter((i) => i.id !== id)
+    })
+  }, [isHeldBaselineItem, canVoidHeldItems])
 
   const setItemPrice = useCallback((id, newPrice) => {
-    if (editingHeldOrderId) return
-    const price = parseFloat(newPrice)
-    if (isNaN(price) || price < 0) return
-    setCart((current) => current.map((item) => item.id === id ? { ...item, price } : item))
-  }, [editingHeldOrderId])
+    setCart((current) => {
+      const item = current.find((i) => i.id === id)
+      if (!item || isHeldBaselineItem(item)) return current
+      const price = parseFloat(newPrice)
+      if (isNaN(price) || price < 0) return current
+      return current.map((i) => i.id === id ? { ...i, price } : i)
+    })
+  }, [isHeldBaselineItem])
 
   const clearCart = () => {
     setCart([])
@@ -503,6 +530,15 @@ const PosTerminal = () => {
       return
     }
     setPaymentModalOpen(true)
+  }
+
+  const openRepayCreditModal = () => {
+    if (!shift) {
+      setWorkspace('shift')
+      setStatusMessage('Open a shift before recording credit repayments.')
+      return
+    }
+    setRepayCreditModalOpen(true)
   }
 
   const sendMpesaStk = async () => {
@@ -760,13 +796,13 @@ const PosTerminal = () => {
   })
 
   const validateHeldOrderUpdate = () => {
-    if (!editingHeldOrderId) return true
+    if (!editingHeldOrderId || canVoidHeldItems) return true
     const currentQtyByProduct = new Map(cart.map((item) => [String(item.productId || item.id), Number(item.qty || 0)]))
     const reducedItem = Object.entries(heldOrderBaseline).find(([productId, originalQty]) => (
       (currentQtyByProduct.get(String(productId)) || 0) < Number(originalQty || 0)
     ))
     if (!reducedItem) return true
-    setStatusMessage('Cannot remove or reduce items from a loaded held order. Add items or increase quantities only.')
+    setStatusMessage('Items from a held order can only be reduced or removed by a user with void permission. Add items or increase quantities only.')
     return false
   }
 
@@ -817,7 +853,9 @@ const PosTerminal = () => {
     setEditingHeldOrderId(raw.id)
     if (raw.customer_name) setCustomer(raw.customer_name)
     setWorkspace('cart')
-    setStatusMessage(`Held order HLD-${raw.id} loaded. Add items or increase quantities only, then tap Update hold or Pay.`)
+    setStatusMessage(canVoidHeldItems
+      ? `Held order HLD-${raw.id} loaded. Add items freely; reducing or removing held items counts as a void.`
+      : `Held order HLD-${raw.id} loaded. Add items or increase quantities freely — reducing or removing held items requires void permission.`)
   }
 
   const cancelHeldOrder = async (heldOrder) => {
@@ -863,6 +901,12 @@ const PosTerminal = () => {
       card: payments.filter((payment) => payment.method === 'card').reduce((sum, payment) => sum + Number(payment.amount || 0), 0),
     }
   }, [apiSales, shift?.id])
+
+  const shiftRepaymentsSummary = useMemo(() => ({
+    total: apiCreditRepayments.reduce((sum, r) => sum + Number(r.amount || 0), 0),
+    count: apiCreditRepayments.length,
+    rows: apiCreditRepayments,
+  }), [apiCreditRepayments])
 
   const voidReceipt = async (receipt) => {
     if (!receipt?.saleId || !user || (!can('*') && !can('sale.void'))) return
@@ -1004,9 +1048,15 @@ const PosTerminal = () => {
           itemCount={itemCount}
           changeQty={changeQty}
           setItemPrice={setItemPrice}
+          removeCartItem={removeCartItem}
+          isHeldBaselineItem={isHeldBaselineItem}
+          canVoidHeldItems={canVoidHeldItems}
           clearCart={clearCart}
           salesHistory={apiSales}
           shiftSummary={shiftSalesSummary}
+          creditRepayments={shiftRepaymentsSummary}
+          onRepayCredit={openRepayCreditModal}
+          creditEnabled={Boolean(branch?.credit_sale_enabled)}
           workspace={workspace}
           setWorkspace={setWorkspace}
           heldOrders={heldApiOrders}
@@ -1088,6 +1138,17 @@ const PosTerminal = () => {
         />
       )}
 
+      {repayCreditModalOpen && (
+        <RepayCreditModal
+          branch={branch}
+          shift={shift}
+          user={user}
+          onClose={() => setRepayCreditModalOpen(false)}
+          onPrintReceipt={(receipt) => { setReceiptModal(receipt); setRepayCreditModalOpen(false) }}
+          onSettled={() => refreshApiData(branch, shift)}
+        />
+      )}
+
       {receiptModal && (
         <EnhancedReceiptModal
           receipt={receiptModal}
@@ -1142,9 +1203,15 @@ const PosTerminal = () => {
             itemCount={itemCount}
             changeQty={changeQty}
             setItemPrice={setItemPrice}
+            removeCartItem={removeCartItem}
+            isHeldBaselineItem={isHeldBaselineItem}
+            canVoidHeldItems={canVoidHeldItems}
             clearCart={clearCart}
             salesHistory={apiSales}
             shiftSummary={shiftSalesSummary}
+          creditRepayments={shiftRepaymentsSummary}
+          onRepayCredit={openRepayCreditModal}
+          creditEnabled={Boolean(branch?.credit_sale_enabled)}
             workspace={workspace}
             setWorkspace={setWorkspace}
             mobile
@@ -1630,6 +1697,9 @@ const WorkspacePanel = ({
   itemCount,
   changeQty,
   setItemPrice,
+  removeCartItem,
+  isHeldBaselineItem,
+  canVoidHeldItems,
   clearCart,
   customer,
   salesHistory,
@@ -1652,6 +1722,9 @@ const WorkspacePanel = ({
   onCloseShift,
   lastCheckout,
   shiftSummary,
+  creditRepayments,
+  onRepayCredit,
+  creditEnabled = false,
   heldCount = 0,
   onOpenTransactions,
   mobile = false,
@@ -1688,6 +1761,9 @@ const WorkspacePanel = ({
         itemCount={itemCount}
         changeQty={changeQty}
         setItemPrice={setItemPrice}
+        removeCartItem={removeCartItem}
+        isHeldBaselineItem={isHeldBaselineItem}
+        canVoidHeldItems={canVoidHeldItems}
         clearCart={clearCart}
         setWorkspace={setWorkspace}
         onHold={onHold}
@@ -1715,7 +1791,7 @@ const WorkspacePanel = ({
         busy={busy}
       />
     )}
-    {workspace === 'summary' && <SalesSummaryView shiftSummary={shiftSummary} itemCount={itemCount} total={total} />}
+    {workspace === 'summary' && <SalesSummaryView shiftSummary={shiftSummary} itemCount={itemCount} total={total} creditRepayments={creditRepayments} onRepayCredit={onRepayCredit} creditEnabled={creditEnabled} />}
     {workspace === 'shift' && <EndShiftView shift={shift} openingCash={openingCash} setOpeningCash={setOpeningCash} countedCash={countedCash} setCountedCash={setCountedCash} onOpenShift={onOpenShift} onCloseShift={onCloseShift} busy={busy} />}
   </section>
 )
@@ -1749,7 +1825,7 @@ const WorkspaceTabBar = ({ workspace, setWorkspace, itemCount, heldCount = 0 }) 
 )
 
 const CartView = ({
-  mode, cart, subtotal, discount, tax, total, itemCount, changeQty, setItemPrice, clearCart, setWorkspace, onHold, onOpenPayment, editingHeldOrderId,
+  mode, cart, subtotal, discount, tax, total, itemCount, changeQty, setItemPrice, removeCartItem, isHeldBaselineItem, canVoidHeldItems, clearCart, setWorkspace, onHold, onOpenPayment, editingHeldOrderId,
 }) => (
     <div className="flex min-h-0 flex-1 flex-col">
       <div className="flex shrink-0 items-center justify-between border-b border-slate-100 px-3 py-2">
@@ -1785,9 +1861,20 @@ const CartView = ({
           </div>
         ) : (
           <ul className="divide-y divide-slate-100 overflow-hidden rounded-lg border border-slate-200/80 bg-white">
-            {cart.map((item) => (
-              <CartLineItem key={item.id} item={item} changeQty={changeQty} setItemPrice={setItemPrice} isHeld={Boolean(editingHeldOrderId)} />
-            ))}
+            {cart.map((item) => {
+              const heldBaseline = isHeldBaselineItem(item)
+              return (
+                <CartLineItem
+                  key={item.id}
+                  item={item}
+                  changeQty={changeQty}
+                  setItemPrice={setItemPrice}
+                  onRemove={removeCartItem}
+                  isHeldBaseline={heldBaseline}
+                  canVoid={canVoidHeldItems}
+                />
+              )
+            })}
           </ul>
         )}
       </div>
@@ -1840,12 +1927,16 @@ const CartView = ({
     </div>
 )
 
-const CartLineItem = ({ item, changeQty, setItemPrice, isHeld }) => {
+const CartLineItem = ({ item, changeQty, setItemPrice, onRemove, isHeldBaseline = false, canVoid = false }) => {
   const [editingPrice, setEditingPrice] = useState(false)
   const [priceInput, setPriceInput] = useState('')
+  const priceLocked = isHeldBaseline
+  const decreaseLocked = isHeldBaseline && !canVoid
+  const removeLocked = isHeldBaseline && !canVoid
+  const removeIsVoid = isHeldBaseline && canVoid
 
   const startEdit = () => {
-    if (isHeld) return
+    if (priceLocked) return
     setPriceInput(String(item.price))
     setEditingPrice(true)
   }
@@ -1855,14 +1946,16 @@ const CartLineItem = ({ item, changeQty, setItemPrice, isHeld }) => {
   }
 
   return (
-    <li className={`group flex items-start gap-2.5 px-3 py-3 transition ${isHeld ? 'bg-amber-50/60' : 'hover:bg-slate-50/80'}`}>
+    <li className={`group flex items-start gap-2.5 px-3 py-3 transition ${isHeldBaseline ? 'bg-amber-50/60' : 'hover:bg-slate-50/80'}`}>
       <div className={`mt-0.5 flex h-9 w-9 shrink-0 items-center justify-center rounded-xl text-[10px] font-bold text-white shadow-sm ${item.color}`}>
         {item.letter}
       </div>
       <div className="min-w-0 flex-1">
         <div className="flex items-start gap-1">
           <p className="flex-1 text-xs font-semibold leading-snug text-slate-900 break-words">{item.name}</p>
-          {isHeld && <FaLock className="mt-0.5 shrink-0 text-[8px] text-amber-500" title="Held order — locked" />}
+          {isHeldBaseline && (
+            <FaLock className="mt-0.5 shrink-0 text-[8px] text-amber-500" title={canVoid ? 'From held order — reduce or remove requires void' : 'From held order — locked'} />
+          )}
         </div>
 
         {editingPrice ? (
@@ -1884,11 +1977,11 @@ const CartLineItem = ({ item, changeQty, setItemPrice, isHeld }) => {
           <button
             type="button"
             onClick={startEdit}
-            disabled={isHeld}
-            className={`mt-0.5 flex items-center gap-1 text-[10px] tabular-nums ${isHeld ? 'cursor-default text-slate-400' : 'group/price text-slate-500 hover:text-emerald-700'}`}
+            disabled={priceLocked}
+            className={`mt-0.5 flex items-center gap-1 text-[10px] tabular-nums ${priceLocked ? 'cursor-default text-slate-400' : 'group/price text-slate-500 hover:text-emerald-700'}`}
           >
             {money(item.price)} each
-            {!isHeld && <FaEdit className="text-[8px] opacity-0 group-hover/price:opacity-60 transition-opacity" />}
+            {!priceLocked && <FaEdit className="text-[8px] opacity-0 group-hover/price:opacity-60 transition-opacity" />}
           </button>
         )}
 
@@ -1899,23 +1992,24 @@ const CartLineItem = ({ item, changeQty, setItemPrice, isHeld }) => {
         {/* Qty controls + total in one row */}
         <div className="mt-2 flex items-center justify-between gap-2">
           <div className="flex items-center gap-1.5">
-            <div className={`inline-flex h-9 items-center overflow-hidden rounded-xl border shadow-sm ${isHeld ? 'border-amber-200 bg-amber-50' : 'border-slate-200 bg-white'}`}>
-              <QtyButton onClick={() => changeQty(item.id, -1)} disabled={isHeld} aria-label="Decrease">
+            <div className={`inline-flex h-9 items-center overflow-hidden rounded-xl border shadow-sm ${isHeldBaseline ? 'border-amber-200 bg-amber-50' : 'border-slate-200 bg-white'}`}>
+              <QtyButton onClick={() => changeQty(item.id, -1)} disabled={decreaseLocked} aria-label="Decrease">
                 <FaMinus className="text-[9px]" />
               </QtyButton>
               <span className="min-w-[2rem] border-x border-slate-200 bg-slate-50 px-1 text-center text-xs font-bold tabular-nums text-slate-900">
                 {item.qty}
               </span>
-              <QtyButton onClick={() => changeQty(item.id, 1)} disabled={isHeld} aria-label="Increase">
+              <QtyButton onClick={() => changeQty(item.id, 1)} aria-label="Increase">
                 <FaPlus className="text-[9px]" />
               </QtyButton>
             </div>
             <button
               type="button"
-              onClick={() => changeQty(item.id, -item.qty)}
-              disabled={isHeld}
-              className={`pos-press inline-flex h-9 w-9 items-center justify-center rounded-xl border border-transparent ${isHeld ? 'cursor-not-allowed text-slate-300' : 'text-slate-400 hover:border-red-200 hover:bg-red-50 hover:text-red-600'}`}
-              aria-label="Remove item"
+              onClick={() => onRemove(item.id)}
+              disabled={removeLocked}
+              title={removeIsVoid ? 'Void this held item' : undefined}
+              className={`pos-press inline-flex h-9 w-9 items-center justify-center rounded-xl border border-transparent ${removeLocked ? 'cursor-not-allowed text-slate-300' : removeIsVoid ? 'text-amber-600 hover:border-amber-200 hover:bg-amber-50' : 'text-slate-400 hover:border-red-200 hover:bg-red-50 hover:text-red-600'}`}
+              aria-label={removeIsVoid ? 'Void item' : 'Remove item'}
             >
               <FaTrash className="text-[10px]" />
             </button>
@@ -2107,6 +2201,188 @@ const AddLoyaltyPointsModal = ({ context, branch, onClose }) => {
             <button type="button" onClick={finish} className="pos-press flex h-12 w-full items-center justify-center gap-2 rounded-xl bg-sky-600 text-sm font-bold text-white hover:bg-sky-700">
               <FaPrint />
               Print Receipt
+            </button>
+          </>
+        )}
+      </div>
+    </PosModal>
+  )
+}
+
+const REPAY_METHODS = [
+  { key: 'cash', label: 'Cash', icon: FaMoneyBillWave },
+  { key: 'mpesa', label: 'M-Pesa', icon: FaMobileAlt },
+]
+
+const RepayCreditModal = ({ branch, shift, user, onClose, onPrintReceipt, onSettled }) => {
+  const [step, setStep] = useState('phone')
+  const [phone, setPhone] = useState('')
+  const [customer, setCustomer] = useState(null)
+  const [amount, setAmount] = useState('')
+  const [method, setMethod] = useState('cash')
+  const [reference, setReference] = useState('')
+  const [error, setError] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [result, setResult] = useState(null)
+
+  const verifyPhone = async () => {
+    if (!phone.trim()) return
+    setBusy(true)
+    setError('')
+    try {
+      const found = await posApi.lookupCustomerByPhone(phone.trim())
+      if (Number(found.credit_balance || 0) <= 0) {
+        setError(`${found.name} has no outstanding credit balance.`)
+        return
+      }
+      setCustomer(found)
+      setAmount(String(found.credit_balance))
+      setStep('amount')
+    } catch (err) {
+      setError(err.data?.detail || 'No registered customer found with this phone number.')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const confirmRepay = async () => {
+    const amountValue = Number(amount)
+    if (!amountValue || amountValue <= 0) { setError('Enter a valid amount.'); return }
+    if (amountValue > Number(customer.credit_balance)) { setError('Amount cannot exceed the outstanding balance.'); return }
+    setBusy(true)
+    setError('')
+    try {
+      const response = await posApi.settleCustomerCredit(customer.id, amountValue.toFixed(2), method, {
+        reference: reference.trim(),
+        shift: shift?.id || null,
+      })
+      setResult(response)
+      setStep('done')
+      onSettled?.()
+    } catch (err) {
+      setError(err.data?.amount || err.data?.method || err.data?.detail || 'Could not record this repayment.')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const printReceipt = () => {
+    if (!result) return
+    const methodLabel = result.repayment.method === 'mpesa' ? 'M-Pesa' : 'Cash'
+    onPrintReceipt?.({
+      id: `RPY-${result.repayment.id}`,
+      saleId: null,
+      customer: customer.name,
+      customerPhone: customer.phone,
+      cashier: user?.username || '',
+      branch: branch?.name || '',
+      register: '',
+      mode: 'Credit Repayment',
+      method: methodLabel,
+      amount: Number(result.repayment.amount),
+      subtotal: Number(result.repayment.amount),
+      tax: 0,
+      discount: 0,
+      paid: Number(result.repayment.amount),
+      change: 0,
+      payments: [{ method: methodLabel, amount: result.repayment.amount }],
+      time: new Date(result.repayment.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+      status: 'Paid',
+      creditBalanceAfter: Number(result.customer.credit_balance),
+      items: [],
+    })
+  }
+
+  return (
+    <PosModal title="Repay Credit" onClose={onClose}>
+      <div className="p-4 space-y-3">
+        {step === 'phone' && (
+          <>
+            <label className="block">
+              <span className="text-xs font-semibold text-slate-600">Customer's registered phone number</span>
+              <input
+                type="tel"
+                value={phone}
+                onChange={(event) => setPhone(event.target.value)}
+                placeholder="07XXXXXXXX"
+                className="mt-1.5 h-12 w-full rounded-xl border-0 bg-slate-50 px-4 text-sm font-semibold text-slate-900 ring-1 ring-slate-200 outline-none focus:bg-white focus:ring-2 focus:ring-amber-500/40"
+              />
+            </label>
+            {error && <p className="rounded-lg bg-red-50 px-3 py-2 text-xs font-semibold text-red-700">{error}</p>}
+            <button type="button" onClick={verifyPhone} disabled={!phone.trim() || busy} className="pos-press flex h-12 w-full items-center justify-center gap-2 rounded-xl bg-slate-900 text-sm font-bold text-white disabled:opacity-50">
+              {busy ? <DotLoader color="white" /> : 'Check credit balance'}
+            </button>
+          </>
+        )}
+
+        {step === 'amount' && customer && (
+          <>
+            <div className="rounded-xl bg-amber-50 p-3 ring-1 ring-amber-100">
+              <p className="text-sm font-bold text-amber-900">{customer.name}</p>
+              <p className="text-xs text-amber-700">{customer.phone} · Outstanding balance: {money(customer.credit_balance)}</p>
+            </div>
+            <label className="block">
+              <span className="text-xs font-semibold text-slate-600">Amount to repay</span>
+              <div className="mt-1.5 flex gap-2">
+                <input
+                  type="number"
+                  value={amount}
+                  onChange={(event) => setAmount(event.target.value)}
+                  className="h-12 flex-1 rounded-xl border-0 bg-slate-50 px-4 text-sm font-semibold text-slate-900 ring-1 ring-slate-200 outline-none focus:bg-white focus:ring-2 focus:ring-amber-500/40"
+                />
+                <button type="button" onClick={() => setAmount(String(customer.credit_balance))} className="pos-press shrink-0 rounded-xl bg-slate-100 px-3 text-xs font-semibold text-slate-700 hover:bg-slate-200">
+                  Full
+                </button>
+              </div>
+            </label>
+            <div>
+              <span className="text-xs font-semibold text-slate-600">Payment method</span>
+              <div className="mt-1.5 grid grid-cols-2 gap-2">
+                {REPAY_METHODS.map(({ key, label, icon: Icon }) => (
+                  <button
+                    key={key}
+                    type="button"
+                    onClick={() => setMethod(key)}
+                    className={`pos-press flex h-11 items-center justify-center gap-2 rounded-xl text-xs font-bold ${method === key ? 'bg-amber-600 text-white' : 'bg-slate-100 text-slate-700 hover:bg-slate-200'}`}
+                  >
+                    <Icon />
+                    {label}
+                  </button>
+                ))}
+              </div>
+            </div>
+            {method === 'mpesa' && (
+              <label className="block">
+                <span className="text-xs font-semibold text-slate-600">M-Pesa reference (optional)</span>
+                <input
+                  type="text"
+                  value={reference}
+                  onChange={(event) => setReference(event.target.value)}
+                  placeholder="e.g. QAB1CD2EF3"
+                  className="mt-1.5 h-11 w-full rounded-xl border-0 bg-slate-50 px-4 text-sm font-semibold text-slate-900 ring-1 ring-slate-200 outline-none focus:bg-white focus:ring-2 focus:ring-amber-500/40"
+                />
+              </label>
+            )}
+            {error && <p className="rounded-lg bg-red-50 px-3 py-2 text-xs font-semibold text-red-700">{error}</p>}
+            <button type="button" onClick={confirmRepay} disabled={busy} className="pos-press flex h-12 w-full items-center justify-center gap-2 rounded-xl bg-emerald-600 text-sm font-bold text-white disabled:opacity-50">
+              {busy ? <DotLoader color="white" /> : `Confirm repayment of ${money(Number(amount || 0))}`}
+            </button>
+          </>
+        )}
+
+        {step === 'done' && result && (
+          <>
+            <div className="rounded-xl bg-emerald-50 p-4 text-center ring-1 ring-emerald-100">
+              <FaCheck className="mx-auto text-2xl text-emerald-600" />
+              <p className="mt-2 text-sm font-semibold text-emerald-900">{money(result.repayment.amount)} received</p>
+              <p className="mt-1 text-xs text-emerald-700">Remaining balance: {money(result.customer.credit_balance)}</p>
+            </div>
+            <button type="button" onClick={printReceipt} className="pos-press flex h-12 w-full items-center justify-center gap-2 rounded-xl bg-sky-600 text-sm font-bold text-white hover:bg-sky-700">
+              <FaPrint />
+              Print Receipt
+            </button>
+            <button type="button" onClick={onClose} className="pos-press flex h-10 w-full items-center justify-center gap-2 rounded-xl border border-slate-200 text-xs font-semibold text-slate-600 hover:bg-slate-50">
+              Close
             </button>
           </>
         )}
@@ -3093,6 +3369,7 @@ const EnhancedReceiptModal = ({ receipt, onClose, onVoid, onVoidLine, onReprint,
           <div class="row"><span>Change</span><strong>${receiptMoney(receipt.change || 0)}</strong></div>
           ${receipt.loyaltyPointsEarned != null ? `<div class="row"><span>Loyalty Points Earned</span><strong>+${receipt.loyaltyPointsEarned}</strong></div>` : ''}
           ${receipt.loyaltyPointsBalance != null ? `<div class="row"><span>Loyalty Points Balance</span><strong>${receipt.loyaltyPointsBalance}</strong></div>` : ''}
+          ${receipt.creditBalanceAfter != null ? `<div class="row"><span>Remaining Credit Balance</span><strong>${receiptMoney(receipt.creditBalanceAfter)}</strong></div>` : ''}
         </section>
         <p class="center thanks">Thank you for shopping with us.<br>Goods sold are subject to store return policy.</p>
       </main><script>window.onload=function(){window.print()}</script></body></html>`
@@ -3123,6 +3400,7 @@ const EnhancedReceiptModal = ({ receipt, onClose, onVoid, onVoidLine, onReprint,
             <SummaryRow label="Mode" value={String(receipt.mode || 'retail').toUpperCase()} />
             {receipt.loyaltyPointsEarned != null && <SummaryRow label="Loyalty Points Earned" value={`+${receipt.loyaltyPointsEarned}`} />}
             {receipt.loyaltyPointsBalance != null && <SummaryRow label="Loyalty Points Balance" value={String(receipt.loyaltyPointsBalance)} />}
+            {receipt.creditBalanceAfter != null && <SummaryRow label="Remaining Credit Balance" value={money(receipt.creditBalanceAfter)} />}
           </div>
           <ul className="mt-3 divide-y divide-slate-100">
             {receipt.items.map((item) => (
@@ -3277,7 +3555,7 @@ const HeldOrdersView = ({ heldOrders: apiHeldOrders = [], editingHeldOrderId, on
   )
 }
 
-const SalesSummaryView = ({ shiftSummary, total, itemCount }) => {
+const SalesSummaryView = ({ shiftSummary, total, itemCount, creditRepayments, onRepayCredit, creditEnabled = false }) => {
   const paymentTotal = shiftSummary.cash + shiftSummary.mpesa + shiftSummary.card
   const cashPct = paymentTotal ? Math.round((shiftSummary.cash / paymentTotal) * 100) : 0
   const mpesaPct = paymentTotal ? Math.round((shiftSummary.mpesa / paymentTotal) * 100) : 0
@@ -3304,6 +3582,40 @@ const SalesSummaryView = ({ shiftSummary, total, itemCount }) => {
       </div>
     </div>
     <p className="mt-3 text-[10px] font-semibold text-slate-500">Current cart total: {money(total)}</p>
+
+    {creditRepayments && (
+      <div className="mt-4 rounded border border-slate-200 bg-white p-3">
+        <div className="flex items-center justify-between">
+          <p className="text-xs font-black uppercase text-slate-500">Credit Repayments</p>
+          <span className="text-xs font-bold tabular-nums text-slate-900">{money(creditRepayments.total)}</span>
+        </div>
+        {creditEnabled && (
+          <button
+            type="button"
+            onClick={onRepayCredit}
+            className="pos-press mt-2.5 flex h-10 w-full items-center justify-center gap-2 rounded-lg bg-amber-500 text-xs font-bold text-white hover:bg-amber-600"
+          >
+            <FaCreditCard />
+            Repay Credit
+          </button>
+        )}
+        {!creditRepayments.rows?.length ? (
+          <p className="mt-2 text-[11px] text-slate-400">No credit repayments recorded this shift.</p>
+        ) : (
+          <ul className="mt-2 divide-y divide-slate-100">
+            {creditRepayments.rows.map((r) => (
+              <li key={r.id} className="flex items-center justify-between py-1.5 text-[11px]">
+                <div className="min-w-0">
+                  <p className="truncate font-semibold text-slate-800">{r.customer_name}</p>
+                  <p className="truncate text-slate-400">{r.customer_phone || '—'} · {r.method === 'mpesa' ? 'M-Pesa' : 'Cash'}</p>
+                </div>
+                <span className="shrink-0 font-bold tabular-nums text-emerald-700">{money(r.amount)}</span>
+              </li>
+            ))}
+          </ul>
+        )}
+      </div>
+    )}
   </PanelBody>
   )
 }

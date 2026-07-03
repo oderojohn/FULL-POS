@@ -65,7 +65,7 @@ const CreditLoyaltyReportTable = ({ reportKey, rows, money }) => {
   const configs = {
     'credit-balance': { columns: ['Name', 'Phone', 'Credit Limit', 'Owing', 'Available'], numeric: [2, 3, 4], map: (r) => [r.name, r.phone || '—', money(r.credit_limit), money(r.credit_balance), money(r.available)] },
     'outstanding-credit': { columns: ['Name', 'Phone', 'Credit Limit', 'Owing'], numeric: [2, 3], map: (r) => [r.name, r.phone || '—', money(r.credit_limit), money(r.credit_balance)] },
-    'credit-payment-history': { columns: ['Customer', 'Amount', 'Recorded By', 'Date'], numeric: [1], map: (r) => [r.customer_name, money(r.amount), r.recorded_by || '—', new Date(r.created_at).toLocaleString()] },
+    'credit-payment-history': { columns: ['Customer', 'Phone', 'Amount', 'Method', 'Recorded By', 'Date'], numeric: [2], map: (r) => [r.customer_name, r.customer_phone || '—', money(r.amount), r.method === 'mpesa' ? 'M-Pesa' : 'Cash', r.recorded_by || '—', new Date(r.created_at).toLocaleString()] },
     'credit-sales': { columns: ['Receipt', 'Customer', 'Amount', 'Date'], numeric: [2], map: (r) => [r.receipt_no, r.customer_name, money(r.amount), new Date(r.created_at).toLocaleString()] },
     'overdue-credit': { columns: ['Name', 'Phone', 'Owing', 'Oldest Credit Sale', 'Days Overdue'], numeric: [2, 4], map: (r) => [r.name, r.phone || '—', money(r.credit_balance), new Date(r.oldest_credit_sale).toLocaleDateString(), r.days_overdue] },
     'loyalty-earned': { columns: ['Customer', 'Points', 'Date'], numeric: [1], map: (r) => [r.customer_name, `+${r.points}`, new Date(r.created_at).toLocaleString()] },
@@ -208,6 +208,8 @@ const SalesControl = ({ initialSection = 'Transactions' }) => {
   const [settleAmount, setSettleAmount] = useState('')
   const [historyTarget, setHistoryTarget] = useState(null)
   const [historyRows, setHistoryRows] = useState([])
+  const [creditHistoryRows, setCreditHistoryRows] = useState([])
+  const [historyTab, setHistoryTab] = useState('purchases')
   const [pointsTarget, setPointsTarget] = useState(null)
   const [pointsMode, setPointsMode] = useState('redeem')
   const [pointsValue, setPointsValue] = useState('')
@@ -529,10 +531,16 @@ const SalesControl = ({ initialSection = 'Transactions' }) => {
 
   const openHistory = async (row) => {
     setHistoryTarget(row)
+    setHistoryTab('purchases')
     setHistoryRows([])
+    setCreditHistoryRows([])
     try {
-      const rows = await posApi.customerPurchaseHistory(row.id)
-      setHistoryRows(rows)
+      const [purchases, creditHistory] = await Promise.all([
+        posApi.customerPurchaseHistory(row.id),
+        posApi.customerCreditHistory(row.id),
+      ])
+      setHistoryRows(purchases)
+      setCreditHistoryRows(creditHistory)
     } catch (err) { setMessage(err.data ? JSON.stringify(err.data) : err.message) }
   }
 
@@ -1303,22 +1311,62 @@ const SalesControl = ({ initialSection = 'Transactions' }) => {
       {historyTarget && (
         <div className="fixed inset-0 z-[60] flex items-center justify-center bg-slate-950/50 p-4" onClick={() => setHistoryTarget(null)}>
           <div onClick={(e) => e.stopPropagation()} className="w-full max-w-lg max-h-[80vh] overflow-y-auto rounded-xl bg-white p-4 shadow-2xl">
-            <h3 className="text-base font-bold text-slate-900">Purchase history — {historyTarget.name}</h3>
-            {historyRows.length === 0 ? (
-              <p className="mt-3 text-sm text-slate-500">No purchases found.</p>
-            ) : (
-              <ul className="mt-3 divide-y divide-slate-100">
-                {historyRows.map((row) => (
-                  <li key={row.id} className="flex items-center justify-between py-2 text-sm">
-                    <div>
-                      <p className="font-semibold text-slate-800">{row.receipt_no}</p>
-                      <p className="text-xs text-slate-500">{new Date(row.created_at).toLocaleString()} · {row.methods.join(', ') || '—'}</p>
-                    </div>
-                    <span className="font-bold tabular-nums text-slate-900">{money(row.total)}</span>
-                  </li>
-                ))}
-              </ul>
+            <h3 className="text-base font-bold text-slate-900">{historyTarget.name}</h3>
+            <p className="mt-0.5 text-xs text-slate-500">{historyTarget.phone || '—'} · Credit limit {money(historyTarget.credit_limit)} · Owing {money(historyTarget.credit_balance)}</p>
+
+            <div className="mt-3 flex gap-1 rounded-lg bg-slate-100 p-1">
+              <button
+                type="button"
+                onClick={() => setHistoryTab('purchases')}
+                className={`h-8 flex-1 rounded-md text-xs font-semibold ${historyTab === 'purchases' ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-500'}`}
+              >
+                Purchase History
+              </button>
+              <button
+                type="button"
+                onClick={() => setHistoryTab('credit')}
+                className={`h-8 flex-1 rounded-md text-xs font-semibold ${historyTab === 'credit' ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-500'}`}
+              >
+                Credit History
+              </button>
+            </div>
+
+            {historyTab === 'purchases' && (
+              historyRows.length === 0 ? (
+                <p className="mt-3 text-sm text-slate-500">No purchases found.</p>
+              ) : (
+                <ul className="mt-3 divide-y divide-slate-100">
+                  {historyRows.map((row) => (
+                    <li key={row.id} className="flex items-center justify-between py-2 text-sm">
+                      <div>
+                        <p className="font-semibold text-slate-800">{row.receipt_no}</p>
+                        <p className="text-xs text-slate-500">{new Date(row.created_at).toLocaleString()} · {row.methods.join(', ') || '—'}</p>
+                      </div>
+                      <span className="font-bold tabular-nums text-slate-900">{money(row.total)}</span>
+                    </li>
+                  ))}
+                </ul>
+              )
             )}
+
+            {historyTab === 'credit' && (
+              creditHistoryRows.length === 0 ? (
+                <p className="mt-3 text-sm text-slate-500">No credit repayments recorded.</p>
+              ) : (
+                <ul className="mt-3 divide-y divide-slate-100">
+                  {creditHistoryRows.map((row) => (
+                    <li key={row.id} className="flex items-center justify-between py-2 text-sm">
+                      <div>
+                        <p className="font-semibold text-slate-800">{row.method === 'mpesa' ? 'M-Pesa' : 'Cash'}{row.reference ? ` · ${row.reference}` : ''}</p>
+                        <p className="text-xs text-slate-500">{new Date(row.created_at).toLocaleString()} · Recorded by {row.recorded_by || '—'}</p>
+                      </div>
+                      <span className="font-bold tabular-nums text-emerald-700">{money(row.amount)}</span>
+                    </li>
+                  ))}
+                </ul>
+              )
+            )}
+
             <button type="button" onClick={() => setHistoryTarget(null)} className="mt-4 h-9 w-full rounded-lg border border-slate-300 text-sm font-semibold text-slate-700">Close</button>
           </div>
         </div>
