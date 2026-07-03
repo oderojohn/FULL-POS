@@ -645,49 +645,11 @@ const SalesControl = ({ initialSection = 'Transactions' }) => {
             footer={!loading && <GridFooter page={cashierPage} pageSize={pageSize} total={cashierTotal} shown={cashierRows.length} onPageChange={setCashierPage} onPageSizeChange={setPageSize} />}
           >
             {/* Date period filter bar */}
-            <div className="flex flex-wrap items-center gap-2 px-2 pt-2 pb-3 border-b border-slate-200">
-              <div className="flex flex-wrap gap-1">
-                {[
-                  { value: 'today', label: 'Today' },
-                  { value: 'yesterday', label: 'Yesterday' },
-                  { value: '7days', label: 'Last 7 days' },
-                  { value: '30days', label: 'Last 30 days' },
-                  { value: 'week', label: 'This week' },
-                  { value: 'month', label: 'This month' },
-                  { value: 'all', label: 'All time' },
-                  { value: 'custom', label: 'Custom' },
-                ].map(({ value, label }) => (
-                  <button
-                    key={value}
-                    type="button"
-                    onClick={() => setCashierPeriod(value)}
-                    className={`px-2.5 py-1 rounded-full text-xs font-semibold border transition-colors ${cashierPeriod === value ? 'bg-slate-900 text-white border-slate-900' : 'bg-white text-slate-600 border-slate-300 hover:border-slate-400'}`}
-                  >
-                    {label}
-                  </button>
-                ))}
-              </div>
-              {cashierPeriod === 'custom' && (
-                <div className="flex items-center gap-1.5 flex-wrap">
-                  <input
-                    type="date"
-                    value={cashierDateFrom}
-                    max={cashierDateTo || isoDate(new Date())}
-                    onChange={(e) => setCashierDateFrom(e.target.value)}
-                    className="h-8 rounded-lg border border-slate-300 bg-white px-2 text-xs text-slate-700 focus:outline-none focus:ring-1 focus:ring-slate-400"
-                  />
-                  <span className="text-xs text-slate-400">—</span>
-                  <input
-                    type="date"
-                    value={cashierDateTo}
-                    min={cashierDateFrom}
-                    max={isoDate(new Date())}
-                    onChange={(e) => setCashierDateTo(e.target.value)}
-                    className="h-8 rounded-lg border border-slate-300 bg-white px-2 text-xs text-slate-700 focus:outline-none focus:ring-1 focus:ring-slate-400"
-                  />
-                </div>
-              )}
-              <div className="flex items-center gap-2 ml-auto">
+            <div className="flex flex-wrap items-center gap-2 px-2 pt-2 pb-1 border-b border-slate-200">
+              <DateFilterBar period={cashierPeriod} setPeriod={setCashierPeriod}
+                dateFrom={cashierDateFrom} setDateFrom={setCashierDateFrom}
+                dateTo={cashierDateTo} setDateTo={setCashierDateTo} className="!border-b-0 flex-1" />
+              <div className="flex items-center gap-2 pb-2">
                 <FilterSelect
                   label="Status"
                   value={cashierStatus}
@@ -1163,28 +1125,63 @@ const _PERIOD_PILLS = [
   { value: 'all', label: 'All time' },
   { value: 'custom', label: 'Custom' },
 ]
-const DateFilterBar = ({ period, setPeriod, dateFrom, setDateFrom, dateTo, setDateTo, className = '' }) => (
-  <div className={`flex flex-wrap items-center gap-2 px-2 pt-2 pb-3 border-b border-slate-200 ${className}`}>
-    <div className="flex flex-wrap gap-1">
-      {_PERIOD_PILLS.map(({ value, label }) => (
-        <button key={value} type="button" onClick={() => setPeriod(value)}
-          className={`px-2.5 py-1 rounded-full text-xs font-semibold border transition-colors ${period === value ? 'bg-slate-900 text-white border-slate-900' : 'bg-white text-slate-600 border-slate-300 hover:border-slate-400'}`}
-        >{label}</button>
-      ))}
+const DateFilterBar = ({ period, setPeriod, dateFrom, setDateFrom, dateTo, setDateTo, className = '' }) => {
+  const [mobileOpen, setMobileOpen] = useState(false)
+  const currentLabel = _PERIOD_PILLS.find((p) => p.value === period)?.label || 'Filter'
+  const customInputs = period === 'custom' && (
+    <div className="flex items-center gap-1.5 flex-wrap">
+      <input type="date" value={dateFrom} max={dateTo || isoDate(new Date())}
+        onChange={(e) => setDateFrom(e.target.value)}
+        className="h-8 rounded-lg border border-slate-300 bg-white px-2 text-xs text-slate-700 focus:outline-none focus:ring-1 focus:ring-slate-400" />
+      <span className="text-xs text-slate-400">—</span>
+      <input type="date" value={dateTo} min={dateFrom} max={isoDate(new Date())}
+        onChange={(e) => setDateTo(e.target.value)}
+        className="h-8 rounded-lg border border-slate-300 bg-white px-2 text-xs text-slate-700 focus:outline-none focus:ring-1 focus:ring-slate-400" />
     </div>
-    {period === 'custom' && (
-      <div className="flex items-center gap-1.5 flex-wrap">
-        <input type="date" value={dateFrom} max={dateTo || isoDate(new Date())}
-          onChange={(e) => setDateFrom(e.target.value)}
-          className="h-8 rounded-lg border border-slate-300 bg-white px-2 text-xs text-slate-700 focus:outline-none focus:ring-1 focus:ring-slate-400" />
-        <span className="text-xs text-slate-400">—</span>
-        <input type="date" value={dateTo} min={dateFrom} max={isoDate(new Date())}
-          onChange={(e) => setDateTo(e.target.value)}
-          className="h-8 rounded-lg border border-slate-300 bg-white px-2 text-xs text-slate-700 focus:outline-none focus:ring-1 focus:ring-slate-400" />
+  )
+
+  return (
+    <div className={`flex flex-wrap items-center gap-2 px-2 pt-2 pb-3 border-b border-slate-200 ${className}`}>
+      {/* Desktop: full pill row */}
+      <div className="hidden sm:flex flex-wrap gap-1">
+        {_PERIOD_PILLS.map(({ value, label }) => (
+          <button key={value} type="button" onClick={() => setPeriod(value)}
+            className={`px-2.5 py-1 rounded-full text-xs font-semibold border transition-colors ${period === value ? 'bg-slate-900 text-white border-slate-900' : 'bg-white text-slate-600 border-slate-300 hover:border-slate-400'}`}
+          >{label}</button>
+        ))}
       </div>
-    )}
-  </div>
-)
+      <div className="hidden sm:block">{customInputs}</div>
+
+      {/* Mobile: single button collapsing all period options */}
+      <div className="relative sm:hidden">
+        <button
+          type="button"
+          onClick={() => setMobileOpen((open) => !open)}
+          className="flex items-center gap-2 rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-xs font-semibold text-slate-700"
+        >
+          <FaFilter className="text-[10px] text-slate-400" />
+          {currentLabel}
+        </button>
+        {mobileOpen && (
+          <>
+            <div className="fixed inset-0 z-10" onClick={() => setMobileOpen(false)} />
+            <div className="absolute left-0 z-20 mt-1 w-44 rounded-lg border border-slate-200 bg-white py-1 shadow-lg">
+              {_PERIOD_PILLS.map(({ value, label }) => (
+                <button
+                  key={value}
+                  type="button"
+                  onClick={() => { setPeriod(value); if (value !== 'custom') setMobileOpen(false) }}
+                  className={`block w-full px-3 py-2 text-left text-xs font-semibold ${period === value ? 'bg-slate-900 text-white' : 'text-slate-600 hover:bg-slate-50'}`}
+                >{label}</button>
+              ))}
+              {customInputs && <div className="px-3 pt-2">{customInputs}</div>}
+            </div>
+          </>
+        )}
+      </div>
+    </div>
+  )
+}
 
 const FormField = ({ label, required, children }) => (
   <div>

@@ -282,6 +282,57 @@ const Layout = ({ children }) => {
     })
   }, [profile?.branch, visibleBranches])
 
+  const companyPill = availableCompanies.length > 0 && (
+    <div className="flex items-center gap-1.5 rounded-lg border border-slate-200 bg-slate-50 px-2.5 py-1.5 hover:bg-slate-100 transition-colors">
+      <FaBuilding className="text-slate-400 text-[10px] shrink-0" />
+      {canSwitchCompany && availableCompanies.length > 1 ? (
+        <>
+          <select
+            value={selectedCompany?.id || ''}
+            onChange={(e) => handleCompanyChange(e.target.value)}
+            disabled={isSwitchingBranch}
+            className="max-w-[10rem] sm:max-w-[12rem] text-xs font-semibold text-slate-700 bg-transparent focus:outline-none cursor-pointer"
+          >
+            {availableCompanies.map((co) => (
+              <option key={co.id} value={co.id}>{co.name}</option>
+            ))}
+          </select>
+          <FaChevronDown className="text-slate-400 text-[9px] shrink-0 pointer-events-none" />
+        </>
+      ) : (
+        <span className="max-w-[10rem] sm:max-w-[12rem] truncate text-xs font-semibold text-slate-700">
+          {selectedCompany?.name || 'Company'}
+        </span>
+      )}
+    </div>
+  )
+
+  const branchPill = (
+    <div className="flex items-center gap-1.5 rounded-lg border border-emerald-200 bg-emerald-50 px-2.5 py-1.5 hover:bg-emerald-100 transition-colors">
+      <FaWarehouse className="text-emerald-500 text-[10px] shrink-0" />
+      {canSwitchBranch && visibleBranches.length > 1 ? (
+        <>
+          <select
+            value={selectedBranch?.id || ''}
+            onChange={(e) => handleBranchChange(e.target.value)}
+            disabled={isSwitchingBranch}
+            className="max-w-[10rem] sm:max-w-[12rem] text-xs font-semibold text-emerald-800 bg-transparent focus:outline-none cursor-pointer"
+          >
+            {visibleBranches.map((b) => (
+              <option key={b.id} value={b.id}>{b.name}</option>
+            ))}
+          </select>
+          <FaChevronDown className="text-emerald-400 text-[9px] shrink-0 pointer-events-none" />
+        </>
+      ) : (
+        <span className="max-w-[10rem] sm:max-w-[12rem] truncate text-xs font-semibold text-emerald-800">
+          {selectedBranch?.name || branch?.name || 'Branch'}
+        </span>
+      )}
+      {isSwitchingBranch && <Spinner size="sm" color="emerald" />}
+    </div>
+  )
+
   return (
     <div className="min-h-screen bg-slate-100 text-slate-900">
       <aside className={`fixed inset-y-0 left-0 z-50 w-72 max-w-[88vw] bg-slate-950 shadow-xl transform transition-transform duration-300 ease-in-out ${sidebarOpen ? 'translate-x-0' : '-translate-x-full'} lg:translate-x-0`}>
@@ -358,99 +409,62 @@ const Layout = ({ children }) => {
       </aside>
 
       <div className="min-w-0 lg:ml-72">
-        <header className="sticky top-0 z-30 bg-white/95 backdrop-blur border-b border-slate-200 h-16 flex items-center justify-between px-4 lg:px-6">
-          <div className="flex items-center gap-3 min-w-0">
-            <button onClick={() => setSidebarOpen(true)} className="lg:hidden text-slate-600 hover:text-slate-900 p-2 -ml-2" aria-label="Open navigation">
-              <FaBars size={22} />
-            </button>
-            <div className="flex items-center gap-2 min-w-0">
-              {/* Company pill */}
-              {availableCompanies.length > 0 && (
-                <div className="flex items-center gap-1.5 rounded-lg border border-slate-200 bg-slate-50 px-2.5 py-1.5 hover:bg-slate-100 transition-colors">
-                  <FaBuilding className="text-slate-400 text-[10px] shrink-0" />
-                  {canSwitchCompany && availableCompanies.length > 1 ? (
-                    <>
-                      <select
-                        value={selectedCompany?.id || ''}
-                        onChange={(e) => handleCompanyChange(e.target.value)}
-                        disabled={isSwitchingBranch}
-                        className="max-w-[4.5rem] sm:max-w-[12rem] text-xs font-semibold text-slate-700 bg-transparent focus:outline-none cursor-pointer"
-                      >
-                        {availableCompanies.map((co) => (
-                          <option key={co.id} value={co.id}>{co.name}</option>
-                        ))}
-                      </select>
-                      <FaChevronDown className="text-slate-400 text-[9px] shrink-0 pointer-events-none" />
-                    </>
-                  ) : (
-                    <span className="max-w-[4.5rem] sm:max-w-[12rem] truncate text-xs font-semibold text-slate-700">
-                      {selectedCompany?.name || 'Company'}
-                    </span>
-                  )}
-                </div>
-              )}
-
-              {/* Branch pill */}
-              <div className="flex items-center gap-1.5 rounded-lg border border-emerald-200 bg-emerald-50 px-2.5 py-1.5 hover:bg-emerald-100 transition-colors">
-                <FaWarehouse className="text-emerald-500 text-[10px] shrink-0" />
-                {canSwitchBranch && visibleBranches.length > 1 ? (
-                  <>
-                    <select
-                      value={selectedBranch?.id || ''}
-                      onChange={(e) => handleBranchChange(e.target.value)}
-                      disabled={isSwitchingBranch}
-                      className="max-w-[4.5rem] sm:max-w-[12rem] text-xs font-semibold text-emerald-800 bg-transparent focus:outline-none cursor-pointer"
-                    >
-                      {visibleBranches.map((b) => (
-                        <option key={b.id} value={b.id}>{b.name}</option>
-                      ))}
-                    </select>
-                    <FaChevronDown className="text-emerald-400 text-[9px] shrink-0 pointer-events-none" />
-                  </>
-                ) : (
-                  <span className="max-w-[4.5rem] sm:max-w-[12rem] truncate text-xs font-semibold text-emerald-800">
-                    {selectedBranch?.name || branch?.name || 'Branch'}
-                  </span>
+        <header className="sticky top-0 z-30 bg-white/95 backdrop-blur border-b border-slate-200">
+          <div className="flex h-16 items-center justify-between px-4 lg:px-6">
+            <div className="flex items-center gap-3 min-w-0">
+              <button onClick={() => setSidebarOpen(true)} className="lg:hidden text-slate-600 hover:text-slate-900 p-2 -ml-2" aria-label="Open navigation">
+                <FaBars size={22} />
+              </button>
+              <span className="sm:hidden font-bold text-slate-900 truncate">{selectedBranch?.name || branch?.name || 'Nexa POS'}</span>
+              <div className="hidden sm:flex items-center gap-2 min-w-0">
+                {companyPill}
+                {branchPill}
+                {switchError && (
+                  <span className="text-[11px] text-red-600 font-medium">{switchError}</span>
                 )}
-                {isSwitchingBranch && <Spinner size="sm" color="emerald" />}
               </div>
-
-              {switchError && (
-                <span className="text-[11px] text-red-600 font-medium">{switchError}</span>
-              )}
+            </div>
+            <div className="flex items-center gap-1.5 sm:gap-3 shrink-0">
+              {/* Offline / sync indicator */}
+              {!effectivelyOnline ? (
+                <span className="flex items-center gap-1 sm:gap-1.5 rounded-full bg-amber-100 px-2 py-1 text-xs font-bold text-amber-700">
+                  <FaExclamationTriangle size={11} />
+                  <span className="hidden sm:inline">OFFLINE{pendingCount > 0 ? ` · ${pendingCount} pending` : ''}</span>
+                  {pendingCount > 0 && <span className="sm:hidden">{pendingCount}</span>}
+                </span>
+              ) : syncing ? (
+                <span className="flex items-center gap-1 sm:gap-1.5 rounded-full bg-blue-100 px-2 py-1 text-xs font-bold text-blue-700 animate-pulse">
+                  <FaSync size={11} className="animate-spin" />
+                  <span className="hidden sm:inline">Syncing…</span>
+                </span>
+              ) : pendingCount > 0 ? (
+                <span className="flex items-center gap-1 sm:gap-1.5 rounded-full bg-emerald-100 px-2 py-1 text-xs font-bold text-emerald-700">
+                  <FaWifi size={11} />
+                  <span className="hidden sm:inline">{pendingCount} to sync</span>
+                  <span className="sm:hidden">{pendingCount}</span>
+                </span>
+              ) : null}
+              <button className="relative p-2 text-slate-500 hover:text-slate-900">
+                <FaBell />
+                <span className="absolute top-1 right-1 w-2 h-2 bg-red-500 rounded-full" />
+              </button>
+              <span className="hidden lg:inline text-sm text-slate-700">Welcome, {user?.username || 'User'}</span>
+              <button onClick={logout} aria-label="Logout" className="flex items-center gap-1.5 rounded bg-slate-100 px-2 py-2 sm:px-3 text-xs font-bold text-slate-700 hover:bg-slate-200">
+                <FaSignOutAlt />
+                <span className="hidden sm:inline">Logout</span>
+              </button>
+              <div className="w-8 h-8 sm:w-9 sm:h-9 bg-emerald-600 rounded-lg flex items-center justify-center text-white font-semibold shrink-0">{(user?.username || 'U')[0].toUpperCase()}</div>
             </div>
           </div>
-          <div className="flex items-center gap-1.5 sm:gap-3 shrink-0">
-            {/* Offline / sync indicator */}
-            {!effectivelyOnline ? (
-              <span className="flex items-center gap-1 sm:gap-1.5 rounded-full bg-amber-100 px-2 py-1 text-xs font-bold text-amber-700">
-                <FaExclamationTriangle size={11} />
-                <span className="hidden sm:inline">OFFLINE{pendingCount > 0 ? ` · ${pendingCount} pending` : ''}</span>
-                {pendingCount > 0 && <span className="sm:hidden">{pendingCount}</span>}
-              </span>
-            ) : syncing ? (
-              <span className="flex items-center gap-1 sm:gap-1.5 rounded-full bg-blue-100 px-2 py-1 text-xs font-bold text-blue-700 animate-pulse">
-                <FaSync size={11} className="animate-spin" />
-                <span className="hidden sm:inline">Syncing…</span>
-              </span>
-            ) : pendingCount > 0 ? (
-              <span className="flex items-center gap-1 sm:gap-1.5 rounded-full bg-emerald-100 px-2 py-1 text-xs font-bold text-emerald-700">
-                <FaWifi size={11} />
-                <span className="hidden sm:inline">{pendingCount} to sync</span>
-                <span className="sm:hidden">{pendingCount}</span>
-              </span>
-            ) : null}
-            <button className="relative p-2 text-slate-500 hover:text-slate-900">
-              <FaBell />
-              <span className="absolute top-1 right-1 w-2 h-2 bg-red-500 rounded-full" />
-            </button>
-            <span className="hidden lg:inline text-sm text-slate-700">Welcome, {user?.username || 'User'}</span>
-            <button onClick={logout} aria-label="Logout" className="flex items-center gap-1.5 rounded bg-slate-100 px-2 py-2 sm:px-3 text-xs font-bold text-slate-700 hover:bg-slate-200">
-              <FaSignOutAlt />
-              <span className="hidden sm:inline">Logout</span>
-            </button>
-            <div className="w-8 h-8 sm:w-9 sm:h-9 bg-emerald-600 rounded-lg flex items-center justify-center text-white font-semibold shrink-0">{(user?.username || 'U')[0].toUpperCase()}</div>
-          </div>
+          {(availableCompanies.length > 0 || canSwitchBranch) && (
+            <div className="sm:hidden flex items-center gap-2 overflow-x-auto px-4 pb-2">
+              {companyPill}
+              {branchPill}
+              {switchError && (
+                <span className="shrink-0 text-[11px] text-red-600 font-medium">{switchError}</span>
+              )}
+            </div>
+          )}
         </header>
 
         <main className="p-4 sm:p-5 lg:p-6">{children}</main>
