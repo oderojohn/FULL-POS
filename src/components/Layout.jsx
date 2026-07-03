@@ -10,6 +10,7 @@ import { useAuth } from '../auth/AuthContext'
 import { ADMIN_ROUTE_POLICIES, ROUTE_POLICIES } from '../auth/rbac'
 import { posApi } from '../api/posApi'
 import { useOfflineStatus } from '../hooks/useOfflineStatus'
+import nexasIcon from '../assets/nexas-icon.png'
 import { Spinner } from './LoadingKit'
 
 const menuStructure = [
@@ -340,11 +341,11 @@ const Layout = ({ children }) => {
       <aside className={`fixed inset-y-0 left-0 z-50 w-72 max-w-[88vw] bg-slate-950 shadow-xl transform transition-transform duration-300 ease-in-out ${sidebarOpen ? 'translate-x-0' : '-translate-x-full'} lg:translate-x-0`}>
         <div className="flex items-center justify-between h-16 px-4 border-b border-slate-800">
           <div className="flex items-center min-w-0">
-            <div className="w-10 h-10 rounded-lg bg-emerald-500 flex items-center justify-center shrink-0">
-              <FaCashRegister className="text-white text-xl" />
+            <div className="w-10 h-10 rounded-lg bg-slate-900 ring-1 ring-slate-800 flex items-center justify-center shrink-0 p-1.5">
+              <img src={nexasIcon} alt="" className="h-full w-full object-contain" />
             </div>
             <div className="ml-3 min-w-0">
-              <h1 className="text-white text-lg font-bold leading-tight truncate">Nexa POS</h1>
+              <h1 className="text-white text-lg font-bold leading-tight truncate">Nexas POS</h1>
               <p className="text-slate-400 text-xs">Backoffice control center</p>
             </div>
           </div>

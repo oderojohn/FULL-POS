@@ -1,8 +1,9 @@
 import React, { useState } from 'react'
 import { Navigate, useLocation, useNavigate } from 'react-router-dom'
-import { FaBuilding, FaCashRegister, FaLock, FaUser } from 'react-icons/fa'
+import { FaBuilding, FaLock, FaUser } from 'react-icons/fa'
 import { useAuth } from '../auth/AuthContext'
 import { DotLoader } from '../components/LoadingKit'
+import nexasIcon from '../assets/nexas-icon.png'
 
 const Login = () => {
   const { session, login } = useAuth()
@@ -50,11 +51,11 @@ const Login = () => {
     <div className="min-h-screen bg-slate-100 flex items-center justify-center px-4 text-slate-900">
       <form onSubmit={submit} className="w-full max-w-md rounded-lg border border-slate-200 bg-white p-6 shadow-sm">
         <div className="mb-6 flex items-center gap-3">
-          <div className="flex h-12 w-12 items-center justify-center rounded bg-emerald-600 text-white">
-            <FaCashRegister />
+          <div className="flex h-12 w-12 items-center justify-center rounded bg-slate-950 p-1.5">
+            <img src={nexasIcon} alt="" className="h-full w-full object-contain" />
           </div>
           <div>
-            <h1 className="text-xl font-black">Nexa POS Login</h1>
+            <h1 className="text-xl font-black">Nexas POS Login</h1>
             <p className="text-sm text-slate-500">Username with password or cashier PIN</p>
           </div>
         </div>
