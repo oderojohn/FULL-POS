@@ -134,6 +134,8 @@ export const posApi = {
     return request(`/customers/?${cleanParams(nextParams)}`)
   },
   createCustomer: (payload) => request('/customers/', { method: 'POST', body: JSON.stringify(payload) }),
+  updateCustomer: (id, payload) => request(`/customers/${id}/`, { method: 'PATCH', body: JSON.stringify(payload) }),
+  settleCustomerCredit: (id, amount) => request(`/customers/${id}/settle-credit/`, { method: 'POST', body: JSON.stringify({ amount }) }),
   openShift: (payload) => request('/shifts/open/', { method: 'POST', body: JSON.stringify(payload) }),
   closeShift: (shiftId, payload) => request(`/shifts/${shiftId}/close/`, { method: 'POST', body: JSON.stringify(payload) }),
   heldOrders: (params = {}) => request(`/held-orders/?${cleanParams(params)}`),

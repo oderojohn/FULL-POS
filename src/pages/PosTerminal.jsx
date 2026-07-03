@@ -4,7 +4,7 @@ import {
   FaBan, FaBars, FaBell, FaCalendarAlt, FaCashRegister, FaChartLine, FaCheck, FaChevronLeft,
   FaChevronRight, FaCreditCard, FaExclamationCircle, FaExclamationTriangle,
   FaList, FaLock, FaMinus, FaEdit, FaMobileAlt, FaMoneyBillWave, FaPause, FaPlus, FaPrint,
-  FaReceipt, FaSearch, FaShoppingBag, FaSignOutAlt, FaStore, FaTag, FaTimes, FaTrash, FaUser
+  FaReceipt, FaSearch, FaShoppingBag, FaSignOutAlt, FaSms, FaStore, FaTag, FaTimes, FaTrash, FaUser, FaWhatsapp
 } from 'react-icons/fa'
 import { posApi } from '../api/posApi'
 import { useAuth } from '../auth/AuthContext'
@@ -29,6 +29,21 @@ const escapeHtml = (value = '') => String(value).replace(/[&<>"']/g, (char) => (
   '"': '&quot;',
   "'": '&#39;',
 }[char]))
+
+const isMobileDevice = () => /Mobi|Android|iPhone|iPad/i.test(navigator.userAgent || '')
+
+const buildReceiptShareText = (receipt) => {
+  const lines = [
+    `${receipt.branch || 'Nexa POS'} — Receipt ${receipt.id}`,
+    `${receipt.time} · ${receipt.cashier}`,
+    '',
+    ...receipt.items.map((item) => `${item.qty} x ${item.name} — ${money(item.qty * item.price - (item.discountAmount || 0))}`),
+    '',
+    `Total: ${money(receipt.amount)}`,
+    'Thank you for shopping with us.',
+  ]
+  return lines.join('\n')
+}
 
 const categoryColors = [
   'bg-indigo-500', 'bg-slate-700', 'bg-red-500', 'bg-emerald-500', 'bg-purple-500',
@@ -524,6 +539,10 @@ const PosTerminal = () => {
       return
     }
     if (!cart.length || !branch || !register || !user) return
+    if (paymentMode === 'credit' && !selectedCustomer?.id) {
+      setStatusMessage('Select a customer before checking out on credit.')
+      return
+    }
 
     const built = buildCheckoutPayments({
       total,
@@ -1001,6 +1020,10 @@ const PosTerminal = () => {
           cartEmpty={!cart.length}
           branch={branch}
           effectivelyOnline={effectivelyOnline}
+          hasCustomer={Boolean(selectedCustomer?.id)}
+          apiCustomers={apiCustomers}
+          customer={customer}
+          setCustomer={setCustomer}
         />
       )}
 
@@ -1014,6 +1037,7 @@ const PosTerminal = () => {
           canVoid={can('*') || can('sale.void')}
           canVoidLine={can('*') || can('sale.refund') || can('sale.void')}
           busy={busy}
+          shareEnabled={Boolean(branch?.whatsapp_sms_receipt_enabled)}
         />
       )}
 
@@ -1116,6 +1140,8 @@ const buildCheckoutPayments = ({ total, paymentMode, cashTendered, mpesaAmount, 
     payments.push({ method: 'mpesa', amount: formatWhole(total), reference: code || 'Direct till payment' })
   } else if (paymentMode === 'card') {
     payments.push({ method: 'card', amount: format(total), reference: mpesaReference.trim() || 'Card terminal' })
+  } else if (paymentMode === 'credit') {
+    payments.push({ method: 'credit', amount: format(total), reference: 'Credit sale' })
   } else if (paymentMode === 'split') {
     const cashValue = Number(cashTendered || 0)
     const mpesaValue = Number(mpesaAmount || 0)
@@ -1569,7 +1595,7 @@ const WorkspacePanel = ({
   onOpenTransactions,
   mobile = false,
 }) => (
-  <section className={`${mobile ? 'flex-1 min-h-0 border-0 shadow-none' : 'hidden border-l shadow-2xl lg:flex lg:shadow-none'} flex flex-col border-slate-200/80 bg-white`}>
+  <section className={`${mobile ? 'flex-1 min-h-0 border-0 shadow-none' : 'hidden border-l shadow-2xl lg:flex lg:min-h-0 lg:shadow-none'} flex flex-col border-slate-200/80 bg-white`}>
     <WorkspaceTabBar workspace={workspace} setWorkspace={setWorkspace} itemCount={itemCount} heldCount={heldCount} />
 
     <div className={`shrink-0 border-b px-3 py-2 ${itemCount === 0 ? 'border-red-100 bg-red-50/70' : 'border-slate-100 bg-gradient-to-br from-slate-50 to-white'}`}>
@@ -1896,6 +1922,10 @@ const PaymentModal = ({
   cartEmpty,
   branch,
   effectivelyOnline = true,
+  hasCustomer = false,
+  apiCustomers = [],
+  customer,
+  setCustomer,
 }) => (
   <PosModal title="Payment" onClose={onClose} wide>
     <div className="p-3 sm:p-4">
@@ -1926,6 +1956,10 @@ const PaymentModal = ({
         cartEmpty={cartEmpty}
         branch={branch}
         effectivelyOnline={effectivelyOnline}
+        hasCustomer={hasCustomer}
+        apiCustomers={apiCustomers}
+        customer={customer}
+        setCustomer={setCustomer}
       />
     </div>
   </PosModal>
@@ -1953,6 +1987,10 @@ const PaymentCheckout = ({
   branch,
   compact = false,
   effectivelyOnline = true,
+  hasCustomer = false,
+  apiCustomers = [],
+  customer,
+  setCustomer,
 }) => {
   const [stkState, setStkState] = useState({ status: 'idle', checkoutRequestId: '', message: '' })
   const [stkCountdown, setStkCountdown] = useState(null)
@@ -1987,6 +2025,7 @@ const PaymentCheckout = ({
     { key: 'mpesa_till', label: 'Till', icon: FaMobileAlt },
     { key: 'card', label: 'Card', icon: FaCreditCard },
     { key: 'split', label: 'Split', icon: FaList },
+    ...(branch?.credit_sale_enabled ? [{ key: 'credit', label: 'Credit', icon: FaUser }] : []),
   ]
 
   useEffect(() => {
@@ -2262,7 +2301,7 @@ const PaymentCheckout = ({
     }
   }
 
-  const canCompleteSale = !cartEmpty && !busy && !autoCompletingSale && !stkIsBusy && !directIsBusy && Boolean(shift) && (!mpesaRequiresStk || stkIsPaid) && (!mpesaDirectRequired || !mpesaDirectEnabled || directIsPaid)
+  const canCompleteSale = !cartEmpty && !busy && !autoCompletingSale && !stkIsBusy && !directIsBusy && Boolean(shift) && (!mpesaRequiresStk || stkIsPaid) && (!mpesaDirectRequired || !mpesaDirectEnabled || directIsPaid) && (paymentMode !== 'credit' || hasCustomer)
   const completeLabel = busy
     ? 'Processing...'
     : autoCompletingSale
@@ -2363,6 +2402,39 @@ const PaymentCheckout = ({
               <input value={mpesaReference} onChange={(e) => setMpesaReference(e.target.value)} placeholder="Auth / last 4 digits" className={inputClass} />
             </label>
             <p className="text-xs text-slate-500">Charge <span className="font-bold text-slate-800">{money(total)}</span></p>
+          </div>
+        )}
+
+        {paymentMode === 'credit' && (
+          <div className="space-y-3">
+            <label className="block">
+              <span className={labelClass}>Customer</span>
+              <select
+                value={customer}
+                onChange={(event) => setCustomer(event.target.value)}
+                className="mt-1.5 h-12 w-full rounded-xl border-0 bg-slate-50 px-4 text-sm font-semibold text-slate-900 ring-1 ring-slate-200 outline-none focus:bg-white focus:ring-2 focus:ring-emerald-500/40"
+              >
+                <option value="Walk-in Customer">Select a customer…</option>
+                {apiCustomers.map((item) => <option key={item.id} value={item.name}>{item.name}</option>)}
+              </select>
+            </label>
+            {(() => {
+              const picked = apiCustomers.find((item) => item.name === customer)
+              if (!picked) return null
+              return (
+                <p className="text-xs text-slate-500">
+                  Limit {money(picked.credit_limit)} · Owing {money(picked.credit_balance)} · Available {money(Math.max(0, picked.credit_limit - picked.credit_balance))}
+                </p>
+              )
+            })()}
+            <p className="text-xs text-slate-500">
+              {money(total)} will be added to the selected customer's account balance, checked against their credit limit.
+            </p>
+            {!hasCustomer && (
+              <p className="rounded-lg bg-amber-50 px-3 py-2 text-xs font-semibold text-amber-800 ring-1 ring-amber-100">
+                Select a customer above before completing a credit sale.
+              </p>
+            )}
           </div>
         )}
 
@@ -2702,9 +2774,23 @@ const ReceiptModal = ({ receipt, onClose, onVoid, onVoidLine, onReprint, canVoid
   )
 }
 
-const EnhancedReceiptModal = ({ receipt, onClose, onVoid, onVoidLine, onReprint, canVoid, canVoidLine, busy }) => {
+const EnhancedReceiptModal = ({ receipt, onClose, onVoid, onVoidLine, onReprint, canVoid, canVoidLine, busy, shareEnabled = false }) => {
   const voided = receipt.status === 'Voided'
   const payments = receipt.payments?.length ? receipt.payments : [{ method: receipt.method, amount: receipt.paid || receipt.amount }]
+  const [sharePhone, setSharePhone] = useState('')
+  const canShare = shareEnabled && isMobileDevice()
+
+  const shareViaWhatsapp = () => {
+    const text = encodeURIComponent(buildReceiptShareText(receipt))
+    const phone = sharePhone.replace(/[^0-9]/g, '')
+    window.open(`https://wa.me/${phone}?text=${text}`, '_blank')
+  }
+
+  const shareViaSms = () => {
+    const text = encodeURIComponent(buildReceiptShareText(receipt))
+    window.location.href = `sms:${sharePhone.replace(/[^0-9+]/g, '')}?body=${text}`
+  }
+
   const printReceipt = () => {
     const rows = receipt.items.map((item) => {
       const gross = item.qty * item.price
@@ -2820,6 +2906,27 @@ const EnhancedReceiptModal = ({ receipt, onClose, onVoid, onVoidLine, onReprint,
             Thank you for shopping with us.
           </p>
         </div>
+        {canShare && (
+          <div className="mx-auto mt-4 max-w-sm">
+            <input
+              type="tel"
+              value={sharePhone}
+              onChange={(event) => setSharePhone(event.target.value)}
+              placeholder="Customer phone (optional)"
+              className="h-10 w-full rounded-xl border border-slate-300 px-3 text-sm outline-none focus:border-emerald-500"
+            />
+            <div className="mt-2 grid grid-cols-2 gap-2">
+              <button type="button" onClick={shareViaWhatsapp} className="pos-press flex h-10 items-center justify-center gap-2 rounded-xl bg-emerald-500 text-xs font-semibold text-white hover:bg-emerald-600">
+                <FaWhatsapp />
+                Send via WhatsApp
+              </button>
+              <button type="button" onClick={shareViaSms} className="pos-press flex h-10 items-center justify-center gap-2 rounded-xl bg-slate-700 text-xs font-semibold text-white hover:bg-slate-800">
+                <FaSms />
+                Send via SMS
+              </button>
+            </div>
+          </div>
+        )}
         <div className="mx-auto mt-4 grid max-w-sm grid-cols-2 gap-2">
           <button type="button" onClick={printReceipt} className="pos-press col-span-2 flex h-11 items-center justify-center gap-2 rounded-xl bg-sky-600 text-sm font-semibold text-white hover:bg-sky-700">
             <FaPrint />

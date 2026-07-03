@@ -28,7 +28,7 @@ const Login = () => {
   const submit = async (event) => {
     event.preventDefault()
     setError('')
-    if (!form.companyCode.trim()) { setError('Please enter your company code.'); return }
+    if (form.companyCode.trim().length !== 3) { setError('Please enter your 3-letter company code.'); return }
     setLoading(true)
     try {
       const companyCode = form.companyCode.trim().toUpperCase()
@@ -65,9 +65,10 @@ const Login = () => {
             <FaBuilding className="absolute left-3 top-3 text-slate-400" />
             <input
               value={form.companyCode}
-              onChange={(event) => setForm({ ...form, companyCode: event.target.value.toUpperCase() })}
-              className="h-11 w-full rounded border border-slate-300 pl-9 pr-3 text-sm outline-none focus:border-emerald-500 uppercase"
-              placeholder="e.g. EMBOITA"
+              onChange={(event) => setForm({ ...form, companyCode: event.target.value.replace(/[^a-zA-Z]/g, '').toUpperCase() })}
+              maxLength={3}
+              className="h-11 w-full rounded border border-slate-300 pl-9 pr-3 text-sm outline-none focus:border-emerald-500 uppercase tracking-widest"
+              placeholder="e.g. EMB"
             />
           </div>
         </label>

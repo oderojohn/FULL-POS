@@ -166,6 +166,10 @@ const emptyBranchForm = {
   mpesa_security_credential: '',
   mpesa_direct_result_url: '',
   mpesa_direct_timeout_url: '',
+  loyalty_enabled: false,
+  loyalty_points_rate: '100',
+  credit_sale_enabled: false,
+  whatsapp_sms_receipt_enabled: false,
 }
 
 const BusinessSetup = () => {
@@ -247,7 +251,7 @@ const BusinessSetup = () => {
     <Panel title="Business / Company Setup" icon={FaBuilding}>
       <form onSubmit={submitCompany} className="p-4 grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-3 border-b border-slate-200">
         <Field label="Business Name" value={form.name} onChange={(value) => setForm((current) => ({ ...current, name: value }))} />
-        <Field label="Company Code" value={form.code} onChange={(value) => setForm((current) => ({ ...current, code: value.toUpperCase() }))} />
+        <Field label="Company Code (3 letters)" value={form.code} maxLength={3} onChange={(value) => setForm((current) => ({ ...current, code: value.replace(/[^a-zA-Z]/g, '').toUpperCase() }))} />
         <Field label="Currency" value={form.currency} onChange={(value) => setForm((current) => ({ ...current, currency: value.toUpperCase() }))} />
         <Field label="VAT / GST Rate" value={form.vat_rate} type="number" onChange={(value) => setForm((current) => ({ ...current, vat_rate: value }))} />
         <label className="flex items-center gap-2 mt-5 text-sm font-semibold text-slate-700">
@@ -255,7 +259,7 @@ const BusinessSetup = () => {
           Active company
         </label>
         <div className="flex items-end gap-2">
-          <button disabled={!isSuperAdmin || !form.name || !form.code} className="inline-flex h-10 items-center px-4 rounded-lg bg-emerald-600 text-white text-sm font-semibold disabled:opacity-50">
+          <button disabled={!isSuperAdmin || !form.name || form.code.trim().length !== 3} className="inline-flex h-10 items-center px-4 rounded-lg bg-emerald-600 text-white text-sm font-semibold disabled:opacity-50">
             {editingId ? <FaSave className="mr-2" /> : <FaPlus className="mr-2" />}
             {editingId ? 'Save' : 'Create'}
           </button>
@@ -345,6 +349,10 @@ const Branches = () => {
       mpesa_security_credential: '',
       mpesa_direct_result_url: '',
       mpesa_direct_timeout_url: '',
+      loyalty_enabled: Boolean(branch.loyalty_enabled),
+      loyalty_points_rate: String(branch.loyalty_points_rate ?? '100'),
+      credit_sale_enabled: Boolean(branch.credit_sale_enabled),
+      whatsapp_sms_receipt_enabled: Boolean(branch.whatsapp_sms_receipt_enabled),
     })
   }
 
@@ -382,6 +390,10 @@ const Branches = () => {
       mpesa_manual_approval_enabled: Boolean(form.mpesa_manual_approval_enabled),
       mpesa_till_enabled: Boolean(form.mpesa_till_enabled),
       mpesa_environment: form.mpesa_environment || 'sandbox',
+      loyalty_enabled: Boolean(form.loyalty_enabled),
+      loyalty_points_rate: form.loyalty_points_rate || '100',
+      credit_sale_enabled: Boolean(form.credit_sale_enabled),
+      whatsapp_sms_receipt_enabled: Boolean(form.whatsapp_sms_receipt_enabled),
     }
     ;[
       'mpesa_consumer_key',
@@ -471,6 +483,19 @@ const Branches = () => {
         <Field label="Direct Till Security Credential" value={form.mpesa_security_credential} onChange={(value) => setForm((current) => ({ ...current, mpesa_security_credential: value }))} />
         <Field label="Direct Till Result URL" value={form.mpesa_direct_result_url} onChange={(value) => setForm((current) => ({ ...current, mpesa_direct_result_url: value }))} />
         <Field label="Direct Till Timeout URL" value={form.mpesa_direct_timeout_url} onChange={(value) => setForm((current) => ({ ...current, mpesa_direct_timeout_url: value }))} />
+        <label className="flex items-center gap-2 mt-5 text-sm font-semibold text-slate-700">
+          <input type="checkbox" checked={Boolean(form.loyalty_enabled)} onChange={(event) => setForm((current) => ({ ...current, loyalty_enabled: event.target.checked }))} />
+          Enable Loyalty Points
+        </label>
+        <Field label="KES per Loyalty Point" value={form.loyalty_points_rate} type="number" onChange={(value) => setForm((current) => ({ ...current, loyalty_points_rate: value }))} />
+        <label className="flex items-center gap-2 mt-5 text-sm font-semibold text-slate-700">
+          <input type="checkbox" checked={Boolean(form.credit_sale_enabled)} onChange={(event) => setForm((current) => ({ ...current, credit_sale_enabled: event.target.checked }))} />
+          Enable Credit Sales
+        </label>
+        <label className="flex items-center gap-2 mt-5 text-sm font-semibold text-slate-700">
+          <input type="checkbox" checked={Boolean(form.whatsapp_sms_receipt_enabled)} onChange={(event) => setForm((current) => ({ ...current, whatsapp_sms_receipt_enabled: event.target.checked }))} />
+          Enable WhatsApp/SMS Receipt Sharing
+        </label>
         <label className="flex items-center gap-2 mt-5 text-sm font-semibold text-slate-700">
           <input type="checkbox" checked={form.is_active} onChange={(event) => setForm((current) => ({ ...current, is_active: event.target.checked }))} />
           Active branch
@@ -2858,7 +2883,7 @@ const RecipientsEditor = ({ recipients, onChange }) => {
 
 const FormGrid = ({ children }) => <div className="p-4 grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3">{children}</div>
 
-const Field = ({ label, value, onChange, type = 'text' }) => (
+const Field = ({ label, value, onChange, type = 'text', maxLength }) => (
   <label>
     <span className="text-xs font-semibold text-slate-600">{label}</span>
     <input
@@ -2866,6 +2891,7 @@ const Field = ({ label, value, onChange, type = 'text' }) => (
       value={value}
       onChange={onChange ? (event) => onChange(event.target.value) : undefined}
       readOnly={!onChange}
+      maxLength={maxLength}
       className="mt-1 w-full px-3 py-2 border border-slate-300 rounded-lg text-sm"
     />
   </label>

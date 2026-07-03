@@ -2,7 +2,7 @@ import React, { useEffect, useMemo, useState } from 'react'
 import { posApi } from '../api/posApi'
 import { useAuth } from '../auth/AuthContext'
 import {
-  FaArrowDown, FaArrowUp, FaBell, FaBoxes, FaCashRegister, FaChartLine,
+  FaArrowDown, FaArrowUp, FaBell, FaBoxes, FaCashRegister, FaChartLine, FaChevronDown,
   FaExclamationTriangle, FaFileExport, FaMoneyBillWave, FaShoppingCart,
   FaStore, FaTags, FaUsers,
 } from 'react-icons/fa'
@@ -221,6 +221,7 @@ const Dashboard = () => {
   const [loading, setLoading] = useState(true)
   const [periodKey, setPeriodKey] = useState('today')
   const [branchFilter, setBranchFilter] = useState('active')
+  const [periodMenuOpen, setPeriodMenuOpen] = useState(false)
 
   const accessibleBranches = useMemo(() => (
     (companyBranches?.length ? companyBranches : branch ? [branch] : []).filter((r) => r?.id && r?.is_active !== false)
@@ -348,8 +349,8 @@ const Dashboard = () => {
           </p>
         </div>
         <div className="flex flex-wrap gap-2">
-          {/* Period pill buttons */}
-          <div className="flex gap-1 bg-slate-100 rounded-lg p-1">
+          {/* Period pill buttons — desktop */}
+          <div className="hidden sm:flex gap-1 bg-slate-100 rounded-lg p-1">
             {PERIOD_OPTIONS.map(({ value, label }) => (
               <button
                 key={value}
@@ -360,6 +361,34 @@ const Dashboard = () => {
                 {label}
               </button>
             ))}
+          </div>
+          {/* Period filter — collapsed to one button on mobile */}
+          <div className="relative sm:hidden">
+            <button
+              type="button"
+              onClick={() => setPeriodMenuOpen((open) => !open)}
+              className="flex items-center gap-2 rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-700 shadow-sm"
+            >
+              {period.label}
+              <FaChevronDown className="text-[10px] text-slate-400" />
+            </button>
+            {periodMenuOpen && (
+              <>
+                <div className="fixed inset-0 z-10" onClick={() => setPeriodMenuOpen(false)} />
+                <div className="absolute left-0 z-20 mt-1 w-40 rounded-lg border border-slate-200 bg-white py-1 shadow-lg">
+                  {PERIOD_OPTIONS.map(({ value, label }) => (
+                    <button
+                      key={value}
+                      type="button"
+                      onClick={() => { setPeriodKey(value); setPeriodMenuOpen(false) }}
+                      className={`block w-full px-3 py-2 text-left text-xs font-semibold ${periodKey === value ? 'bg-emerald-50 text-emerald-700' : 'text-slate-600 hover:bg-slate-50'}`}
+                    >
+                      {label}
+                    </button>
+                  ))}
+                </div>
+              </>
+            )}
           </div>
           {accessibleBranches.length > 1 && (
             <select
