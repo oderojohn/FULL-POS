@@ -2,7 +2,7 @@ import React, { useCallback, useEffect, useMemo, useState } from 'react'
 import {
   FaBan, FaCashRegister, FaCheck, FaChevronLeft, FaChevronRight, FaClock,
   FaDownload, FaEdit, FaEye, FaFileExcel, FaFilePdf, FaFilter, FaPlus,
-  FaPrint, FaSearch, FaTags, FaTimes, FaTrash
+  FaPrint, FaSearch, FaTags, FaTimes, FaTrash, FaUsers
 } from 'react-icons/fa'
 import { posApi } from '../api/posApi'
 import { useAuth } from '../auth/AuthContext'
@@ -23,8 +23,64 @@ const SECTION_PERMISSIONS = {
   'Discount Engine': ['admin.pricing', 'sale.discount'],
   'Price Scheduler': ['admin.pricing'],
   'Customer Sales': ['sales.customer'],
+  Customers: ['sales.customer'],
   Reports: ['reports.view'],
   'Audit Logs': ['sales.audit', 'admin.audit'],
+}
+
+const REPORT_CATEGORIES = [
+  { key: 'sales', label: 'Sales' },
+  { key: 'credit', label: 'Credit' },
+  { key: 'loyalty', label: 'Loyalty' },
+  { key: 'customer', label: 'Customer' },
+]
+
+const REPORT_CATEGORY_TABS = {
+  sales: [
+    { key: 'cashier', label: 'Cashier Performance' },
+    { key: 'product', label: 'Product Sales' },
+    { key: 'hourly', label: 'Hourly Heatmap' },
+  ],
+  credit: [
+    { key: 'credit-balance', label: 'Customer Credit Balance' },
+    { key: 'outstanding-credit', label: 'Outstanding Credit' },
+    { key: 'credit-payment-history', label: 'Credit Payment History' },
+    { key: 'credit-sales', label: 'Credit Sales' },
+    { key: 'overdue-credit', label: 'Overdue Credit' },
+  ],
+  loyalty: [
+    { key: 'loyalty-earned', label: 'Loyalty Points Earned' },
+    { key: 'loyalty-redeemed', label: 'Loyalty Points Redeemed' },
+    { key: 'loyalty-balance', label: 'Customer Loyalty Balance' },
+    { key: 'top-loyalty-customers', label: 'Top Loyalty Customers' },
+  ],
+  customer: [
+    { key: 'customer-purchase-history', label: 'Customer Purchase History' },
+    { key: 'customer-sales-summary', label: 'Customer Sales Summary' },
+    { key: 'customer-registration', label: 'Customer Registration' },
+  ],
+}
+
+const CreditLoyaltyReportTable = ({ reportKey, rows, money }) => {
+  const configs = {
+    'credit-balance': { columns: ['Name', 'Phone', 'Credit Limit', 'Owing', 'Available'], numeric: [2, 3, 4], map: (r) => [r.name, r.phone || '—', money(r.credit_limit), money(r.credit_balance), money(r.available)] },
+    'outstanding-credit': { columns: ['Name', 'Phone', 'Credit Limit', 'Owing'], numeric: [2, 3], map: (r) => [r.name, r.phone || '—', money(r.credit_limit), money(r.credit_balance)] },
+    'credit-payment-history': { columns: ['Customer', 'Amount', 'Recorded By', 'Date'], numeric: [1], map: (r) => [r.customer_name, money(r.amount), r.recorded_by || '—', new Date(r.created_at).toLocaleString()] },
+    'credit-sales': { columns: ['Receipt', 'Customer', 'Amount', 'Date'], numeric: [2], map: (r) => [r.receipt_no, r.customer_name, money(r.amount), new Date(r.created_at).toLocaleString()] },
+    'overdue-credit': { columns: ['Name', 'Phone', 'Owing', 'Oldest Credit Sale', 'Days Overdue'], numeric: [2, 4], map: (r) => [r.name, r.phone || '—', money(r.credit_balance), new Date(r.oldest_credit_sale).toLocaleDateString(), r.days_overdue] },
+    'loyalty-earned': { columns: ['Customer', 'Points', 'Date'], numeric: [1], map: (r) => [r.customer_name, `+${r.points}`, new Date(r.created_at).toLocaleString()] },
+    'loyalty-redeemed': { columns: ['Customer', 'Points', 'Date'], numeric: [1], map: (r) => [r.customer_name, `-${r.points}`, new Date(r.created_at).toLocaleString()] },
+    'loyalty-balance': { columns: ['Name', 'Phone', 'Loyalty Points'], numeric: [2], map: (r) => [r.name, r.phone || '—', r.loyalty_points.toLocaleString()] },
+    'top-loyalty-customers': { columns: ['Name', 'Phone', 'Loyalty Points'], numeric: [2], map: (r) => [r.name, r.phone || '—', r.loyalty_points.toLocaleString()] },
+  }
+  const config = configs[reportKey]
+  if (!config) return null
+  return (
+    <>
+      <DenseTable columns={config.columns} rows={rows.map(config.map)} rowData={rows} numericColumns={config.numeric} />
+      {!rows.length && <EmptyState text="No data found for this period." />}
+    </>
+  )
 }
 
 const isoDate = (date) => `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`
@@ -86,7 +142,7 @@ const VarianceBadge = ({ amount, status: vs }) => {
 }
 
 const SalesControl = ({ initialSection = 'Transactions' }) => {
-  const { user, can, branch: authBranch, company_branches: companyBranches, reloadSignal } = useAuth()
+  const { user, can, branch: authBranch, company_branches: companyBranches, reloadSignal, isBranchAdmin } = useAuth()
   const activeSection = initialSection
   const branchName = authBranch?.name || 'Current branch'
 
@@ -143,6 +199,19 @@ const SalesControl = ({ initialSection = 'Transactions' }) => {
   const [liveCustomerSales, setLiveCustomerSales] = useState([])
   const [customerSalesTotal, setCustomerSalesTotal] = useState(0)
   const [customerSalesPage, setCustomerSalesPage] = useState(1)
+  const [customersRows, setCustomersRows] = useState([])
+  const [customersLoading, setCustomersLoading] = useState(false)
+  const emptyCustomerForm = { name: '', phone: '', email: '', address: '', credit_limit: '0' }
+  const [customerForm, setCustomerForm] = useState(emptyCustomerForm)
+  const [editingCustomerId, setEditingCustomerId] = useState(null)
+  const [settleTarget, setSettleTarget] = useState(null)
+  const [settleAmount, setSettleAmount] = useState('')
+  const [historyTarget, setHistoryTarget] = useState(null)
+  const [historyRows, setHistoryRows] = useState([])
+  const [pointsTarget, setPointsTarget] = useState(null)
+  const [pointsMode, setPointsMode] = useState('redeem')
+  const [pointsValue, setPointsValue] = useState('')
+  const [pointsReason, setPointsReason] = useState('')
   const [auditLogs, setAuditLogs] = useState([])
   const [auditLogsTotal, setAuditLogsTotal] = useState(0)
   const [auditLogsPage, setAuditLogsPage] = useState(1)
@@ -179,6 +248,9 @@ const SalesControl = ({ initialSection = 'Transactions' }) => {
   const [productSales, setProductSales] = useState([])
   const [hourlySales, setHourlySales] = useState([])
   const [activeReport, setActiveReport] = useState('cashier')
+  const [reportCategory, setReportCategory] = useState('sales')
+  const [clReportData, setClReportData] = useState([])
+  const [clReportLoading, setClReportLoading] = useState(false)
 
   const branchId = authBranch?.id
   const transactionBranchId = transactionFilters.branchId || branchId
@@ -202,6 +274,7 @@ const SalesControl = ({ initialSection = 'Transactions' }) => {
     setLivePaymentsApi([]); setPaymentsTotal(0); setPaymentsPage(1)
     setCashierRows([]); setCashierTotal(0); setCashierPage(1)
     setLiveCustomerSales([]); setCustomerSalesTotal(0); setCustomerSalesPage(1)
+    setCustomersRows([])
     setAuditLogs([]); setAuditLogsTotal(0); setAuditLogsPage(1)
     setCashierPerf([]); setProductSales([]); setHourlySales([])
     // Clear pricing/product caches and open forms
@@ -336,6 +409,33 @@ const SalesControl = ({ initialSection = 'Transactions' }) => {
     finally { setReportLoading(false) }
   }, [branchId, reportPeriod, reportDateFrom, reportDateTo])
 
+  const CL_REPORT_FETCHERS = {
+    'credit-balance': () => posApi.creditBalanceReport(),
+    'outstanding-credit': () => posApi.outstandingCreditReport(),
+    'credit-payment-history': (dateParams) => posApi.creditPaymentHistoryReport(dateParams),
+    'credit-sales': (dateParams) => posApi.creditSalesReport(dateParams),
+    'overdue-credit': () => posApi.overdueCreditReport(),
+    'loyalty-earned': (dateParams) => posApi.loyaltyEarnedReport(dateParams),
+    'loyalty-redeemed': (dateParams) => posApi.loyaltyRedeemedReport(dateParams),
+    'loyalty-balance': () => posApi.loyaltyBalanceReport(),
+    'top-loyalty-customers': () => posApi.topLoyaltyCustomersReport(),
+    'customer-sales-summary': () => posApi.customerSales({ page_size: 200 }).then((r) => (Array.isArray(r) ? r : r?.results || [])),
+    'customer-registration': () => posApi.customerRegistrationReport(),
+  }
+
+  const loadCreditLoyaltyReport = useCallback(async () => {
+    if (!branchId || !CL_REPORT_FETCHERS[activeReport]) return
+    setClReportLoading(true)
+    const dateParams = reportPeriod === 'custom'
+      ? (reportDateFrom ? { date_from: reportDateFrom, date_to: reportDateTo || reportDateFrom } : {})
+      : transactionPeriod(reportPeriod)
+    try {
+      const data = await CL_REPORT_FETCHERS[activeReport](dateParams)
+      setClReportData(Array.isArray(data) ? data : [])
+    } catch (err) { setMessage(err.data ? JSON.stringify(err.data) : err.message) }
+    finally { setClReportLoading(false) }
+  }, [branchId, activeReport, reportPeriod, reportDateFrom, reportDateTo])
+
   const loadOtherSection = useCallback(async () => {
     if (!branchId) return; setLoading(true)
     const base = { branch: branchId, page_size: pageSize }
@@ -360,6 +460,9 @@ const SalesControl = ({ initialSection = 'Transactions' }) => {
       } else if (activeSection === 'Customer Sales') {
         const r = await posApi.customerSales({ ...base, page: customerSalesPage })
         const { results, count } = unwrapList(r); setLiveCustomerSales(results); setCustomerSalesTotal(count)
+      } else if (activeSection === 'Customers') {
+        const r = await posApi.customers({ page_size: 200 })
+        const { results } = unwrapList(r); setCustomersRows(results)
       } else if (activeSection === 'Audit Logs') {
         const dateParams = auditLogsPeriod === 'custom'
           ? (auditLogsDateFrom ? { date_from: auditLogsDateFrom, date_to: auditLogsDateTo || auditLogsDateFrom } : {})
@@ -373,6 +476,103 @@ const SalesControl = ({ initialSection = 'Transactions' }) => {
     paymentsPeriod, paymentsDateFrom, paymentsDateTo,
     discountsLogPeriod, discountsLogDateFrom, discountsLogDateTo,
     auditLogsPeriod, auditLogsDateFrom, auditLogsDateTo])
+
+  const reloadCustomers = async () => {
+    setCustomersLoading(true)
+    try {
+      const r = await posApi.customers({ page_size: 200 })
+      const { results } = unwrapList(r); setCustomersRows(results)
+    } catch (err) { setMessage(err.data ? JSON.stringify(err.data) : err.message) }
+    finally { setCustomersLoading(false) }
+  }
+
+  const editCustomer = (row) => {
+    setEditingCustomerId(row.id)
+    setCustomerForm({ name: row.name || '', phone: row.phone || '', email: row.email || '', address: row.address || '', credit_limit: String(row.credit_limit ?? '0') })
+  }
+
+  const resetCustomerForm = () => {
+    setEditingCustomerId(null)
+    setCustomerForm(emptyCustomerForm)
+  }
+
+  const submitCustomer = async (event) => {
+    event.preventDefault()
+    setMessage('')
+    const payload = {
+      name: customerForm.name.trim(),
+      phone: customerForm.phone.trim(),
+      email: customerForm.email.trim(),
+      address: customerForm.address.trim(),
+      credit_limit: customerForm.credit_limit || '0',
+    }
+    try {
+      if (editingCustomerId) {
+        await posApi.updateCustomer(editingCustomerId, payload)
+        setMessage('Customer updated.')
+      } else {
+        await posApi.createCustomer(payload)
+        setMessage('Customer created.')
+      }
+      resetCustomerForm()
+      await reloadCustomers()
+    } catch (err) { setMessage(err.data ? JSON.stringify(err.data) : err.message) }
+  }
+
+  const toggleCustomerActive = async (row) => {
+    try {
+      await posApi.updateCustomer(row.id, { is_active: !row.is_active })
+      setMessage(`${row.name} ${row.is_active ? 'suspended' : 'activated'}.`)
+      await reloadCustomers()
+    } catch (err) { setMessage(err.data ? JSON.stringify(err.data) : err.message) }
+  }
+
+  const openHistory = async (row) => {
+    setHistoryTarget(row)
+    setHistoryRows([])
+    try {
+      const rows = await posApi.customerPurchaseHistory(row.id)
+      setHistoryRows(rows)
+    } catch (err) { setMessage(err.data ? JSON.stringify(err.data) : err.message) }
+  }
+
+  const openPointsAction = (row, mode) => {
+    setPointsTarget(row)
+    setPointsMode(mode)
+    setPointsValue('')
+    setPointsReason('')
+  }
+
+  const submitPointsAction = async (event) => {
+    event.preventDefault()
+    if (!pointsTarget) return
+    setMessage('')
+    try {
+      if (pointsMode === 'redeem') {
+        const resp = await posApi.redeemLoyaltyPoints(pointsTarget.id, pointsValue)
+        setMessage(`Redeemed ${pointsValue} points for ${pointsTarget.name} — value ${money(resp.value)}.`)
+      } else {
+        const delta = Number(pointsValue)
+        await posApi.adjustLoyaltyPoints(pointsTarget.id, delta, pointsReason)
+        setMessage(`Adjusted ${pointsTarget.name}'s loyalty points by ${delta > 0 ? '+' : ''}${delta}.`)
+      }
+      setPointsTarget(null)
+      await reloadCustomers()
+    } catch (err) { setMessage(err.data ? JSON.stringify(err.data) : err.message) }
+  }
+
+  const submitSettleCredit = async (event) => {
+    event.preventDefault()
+    if (!settleTarget) return
+    setMessage('')
+    try {
+      await posApi.settleCustomerCredit(settleTarget.id, settleAmount)
+      setMessage(`Recorded payment of ${money(settleAmount)} for ${settleTarget.name}.`)
+      setSettleTarget(null)
+      setSettleAmount('')
+      await reloadCustomers()
+    } catch (err) { setMessage(err.data ? JSON.stringify(err.data) : err.message) }
+  }
 
   useEffect(() => {
     if (!branchId) return
@@ -388,11 +588,15 @@ const SalesControl = ({ initialSection = 'Transactions' }) => {
         if (priceSchedulerTab === 'schedules') loadPriceSchedules()
         else loadPriceLogs()
       }
-      else if (activeSection === 'Reports') loadReports()
+      else if (activeSection === 'Reports') {
+        if (reportCategory === 'sales') loadReports()
+        else if (reportCategory === 'customer' && activeReport === 'customer-purchase-history') reloadCustomers()
+        else loadCreditLoyaltyReport()
+      }
       else if (!['Reports'].includes(activeSection)) loadOtherSection()
     }, query ? 350 : 0)
     return () => clearTimeout(timer)
-  }, [activeSection, branchId, reloadSignal, loadTransactions, loadVoids, loadCashierSummary, loadDiscountRules, loadDiscountLogs, loadPriceSchedules, loadPriceLogs, loadReports, loadOtherSection, query, discountEngineTab, priceSchedulerTab])
+  }, [activeSection, branchId, reloadSignal, loadTransactions, loadVoids, loadCashierSummary, loadDiscountRules, loadDiscountLogs, loadPriceSchedules, loadPriceLogs, loadReports, loadCreditLoyaltyReport, loadOtherSection, query, discountEngineTab, priceSchedulerTab, reportCategory, activeReport])
 
   useEffect(() => {
     setTransactionsPage(1); setVoidsPage(1); setCashierPage(1)
@@ -998,16 +1202,173 @@ const SalesControl = ({ initialSection = 'Transactions' }) => {
         </Panel>
       )}
 
+      {/* Customers — loyalty points & credit balances */}
+      {activeSection === 'Customers' && (
+        <div className="space-y-4">
+          <Panel title="Customers · Loyalty & Credit" icon={FaUsers} loading={customersLoading}>
+            <form onSubmit={submitCustomer} className="grid grid-cols-1 gap-3 p-4 border-b border-slate-200 sm:grid-cols-2 xl:grid-cols-5">
+              <label className="block">
+                <span className="text-xs font-semibold text-slate-600">Name</span>
+                <input value={customerForm.name} onChange={(e) => setCustomerForm((c) => ({ ...c, name: e.target.value }))}
+                  className="mt-1 h-9 w-full rounded-lg border border-slate-300 px-3 text-sm" />
+              </label>
+              <label className="block">
+                <span className="text-xs font-semibold text-slate-600">Phone</span>
+                <input value={customerForm.phone} onChange={(e) => setCustomerForm((c) => ({ ...c, phone: e.target.value }))}
+                  className="mt-1 h-9 w-full rounded-lg border border-slate-300 px-3 text-sm" />
+              </label>
+              <label className="block">
+                <span className="text-xs font-semibold text-slate-600">Email</span>
+                <input value={customerForm.email} onChange={(e) => setCustomerForm((c) => ({ ...c, email: e.target.value }))}
+                  className="mt-1 h-9 w-full rounded-lg border border-slate-300 px-3 text-sm" />
+              </label>
+              <label className="block">
+                <span className="text-xs font-semibold text-slate-600">Address</span>
+                <input value={customerForm.address} onChange={(e) => setCustomerForm((c) => ({ ...c, address: e.target.value }))}
+                  className="mt-1 h-9 w-full rounded-lg border border-slate-300 px-3 text-sm" />
+              </label>
+              <label className="block">
+                <span className="text-xs font-semibold text-slate-600">Credit Limit</span>
+                <input type="number" min="0" step="0.01" value={customerForm.credit_limit} onChange={(e) => setCustomerForm((c) => ({ ...c, credit_limit: e.target.value }))}
+                  className="mt-1 h-9 w-full rounded-lg border border-slate-300 px-3 text-sm" />
+              </label>
+              <div className="flex items-end gap-2">
+                <button disabled={!customerForm.name.trim() || !customerForm.phone.trim()} className="h-9 rounded-lg bg-emerald-600 px-4 text-sm font-semibold text-white disabled:opacity-50">
+                  {editingCustomerId ? 'Save' : 'Add customer'}
+                </button>
+                {editingCustomerId && (
+                  <button type="button" onClick={resetCustomerForm} className="h-9 rounded-lg border border-slate-300 px-3 text-sm font-semibold text-slate-700">New</button>
+                )}
+              </div>
+            </form>
+            {message && <div className="mx-4 mt-3 rounded-lg bg-slate-50 border border-slate-200 px-3 py-2 text-sm text-slate-700">{message}</div>}
+            {customersLoading ? <SkeletonTable rows={6} cols={7} /> : (
+              <>
+                <DenseTable
+                  columns={['Name', 'Phone', 'Credit Limit', 'Owing', 'Available', 'Loyalty Points', 'Status', 'Actions']}
+                  rows={customersRows.map((c) => [
+                    c.name,
+                    c.phone || '—',
+                    money(c.credit_limit),
+                    money(c.credit_balance),
+                    money(Math.max(0, Number(c.credit_limit || 0) - Number(c.credit_balance || 0))),
+                    Number(c.loyalty_points || 0).toLocaleString(),
+                    <span key={`status-${c.id}`} className={`rounded-full px-2 py-0.5 text-[11px] font-bold ${c.is_active ? 'bg-emerald-50 text-emerald-700' : 'bg-red-50 text-red-700'}`}>{c.is_active ? 'Active' : 'Suspended'}</span>,
+                    <div className="flex flex-wrap gap-1.5" key={`actions-${c.id}`}>
+                      <button type="button" onClick={() => editCustomer(c)} className="rounded-lg border border-slate-300 px-2.5 py-1 text-xs font-semibold text-slate-700 hover:bg-slate-50">Edit</button>
+                      <button type="button" onClick={() => openHistory(c)} className="rounded-lg border border-slate-300 px-2.5 py-1 text-xs font-semibold text-slate-700 hover:bg-slate-50">History</button>
+                      {Number(c.credit_balance || 0) > 0 && (
+                        <button type="button" onClick={() => { setSettleTarget(c); setSettleAmount(String(c.credit_balance)) }} className="rounded-lg border border-emerald-300 bg-emerald-50 px-2.5 py-1 text-xs font-semibold text-emerald-700 hover:bg-emerald-100">Settle</button>
+                      )}
+                      {isBranchAdmin && Number(c.loyalty_points || 0) > 0 && (
+                        <button type="button" onClick={() => openPointsAction(c, 'redeem')} className="rounded-lg border border-sky-300 bg-sky-50 px-2.5 py-1 text-xs font-semibold text-sky-700 hover:bg-sky-100">Redeem</button>
+                      )}
+                      {isBranchAdmin && (
+                        <button type="button" onClick={() => openPointsAction(c, 'adjust')} className="rounded-lg border border-slate-300 px-2.5 py-1 text-xs font-semibold text-slate-700 hover:bg-slate-50">Adjust</button>
+                      )}
+                      <button type="button" onClick={() => toggleCustomerActive(c)} className={`rounded-lg px-2.5 py-1 text-xs font-semibold ${c.is_active ? 'border border-red-300 bg-red-50 text-red-700 hover:bg-red-100' : 'border border-emerald-300 bg-emerald-50 text-emerald-700 hover:bg-emerald-100'}`}>
+                        {c.is_active ? 'Suspend' : 'Activate'}
+                      </button>
+                    </div>,
+                  ])}
+                  rowData={customersRows}
+                  numericColumns={[2, 3, 4, 5]}
+                />
+                {!customersRows.length && <EmptyState text="No customers found for this branch." />}
+              </>
+            )}
+          </Panel>
+        </div>
+      )}
+
+      {settleTarget && (
+        <div className="fixed inset-0 z-[60] flex items-center justify-center bg-slate-950/50 p-4" onClick={() => setSettleTarget(null)}>
+          <form onSubmit={submitSettleCredit} onClick={(e) => e.stopPropagation()} className="w-full max-w-sm rounded-xl bg-white p-4 shadow-2xl">
+            <h3 className="text-base font-bold text-slate-900">Record payment — {settleTarget.name}</h3>
+            <p className="mt-1 text-xs text-slate-500">Outstanding balance: {money(settleTarget.credit_balance)}</p>
+            <label className="mt-3 block">
+              <span className="text-xs font-semibold text-slate-600">Amount received</span>
+              <input type="number" min="0.01" step="0.01" max={settleTarget.credit_balance} value={settleAmount}
+                onChange={(e) => setSettleAmount(e.target.value)} autoFocus
+                className="mt-1 h-10 w-full rounded-lg border border-slate-300 px-3 text-sm" />
+            </label>
+            <div className="mt-4 flex justify-end gap-2">
+              <button type="button" onClick={() => setSettleTarget(null)} className="h-9 rounded-lg border border-slate-300 px-3 text-sm font-semibold text-slate-700">Cancel</button>
+              <button className="h-9 rounded-lg bg-emerald-600 px-4 text-sm font-semibold text-white">Record payment</button>
+            </div>
+          </form>
+        </div>
+      )}
+
+      {historyTarget && (
+        <div className="fixed inset-0 z-[60] flex items-center justify-center bg-slate-950/50 p-4" onClick={() => setHistoryTarget(null)}>
+          <div onClick={(e) => e.stopPropagation()} className="w-full max-w-lg max-h-[80vh] overflow-y-auto rounded-xl bg-white p-4 shadow-2xl">
+            <h3 className="text-base font-bold text-slate-900">Purchase history — {historyTarget.name}</h3>
+            {historyRows.length === 0 ? (
+              <p className="mt-3 text-sm text-slate-500">No purchases found.</p>
+            ) : (
+              <ul className="mt-3 divide-y divide-slate-100">
+                {historyRows.map((row) => (
+                  <li key={row.id} className="flex items-center justify-between py-2 text-sm">
+                    <div>
+                      <p className="font-semibold text-slate-800">{row.receipt_no}</p>
+                      <p className="text-xs text-slate-500">{new Date(row.created_at).toLocaleString()} · {row.methods.join(', ') || '—'}</p>
+                    </div>
+                    <span className="font-bold tabular-nums text-slate-900">{money(row.total)}</span>
+                  </li>
+                ))}
+              </ul>
+            )}
+            <button type="button" onClick={() => setHistoryTarget(null)} className="mt-4 h-9 w-full rounded-lg border border-slate-300 text-sm font-semibold text-slate-700">Close</button>
+          </div>
+        </div>
+      )}
+
+      {pointsTarget && (
+        <div className="fixed inset-0 z-[60] flex items-center justify-center bg-slate-950/50 p-4" onClick={() => setPointsTarget(null)}>
+          <form onSubmit={submitPointsAction} onClick={(e) => e.stopPropagation()} className="w-full max-w-sm rounded-xl bg-white p-4 shadow-2xl">
+            <h3 className="text-base font-bold text-slate-900">{pointsMode === 'redeem' ? 'Redeem points' : 'Adjust points'} — {pointsTarget.name}</h3>
+            <p className="mt-1 text-xs text-slate-500">Current balance: {pointsTarget.loyalty_points} points</p>
+            <label className="mt-3 block">
+              <span className="text-xs font-semibold text-slate-600">{pointsMode === 'redeem' ? 'Points to redeem' : 'Points delta (+/-)'}</span>
+              <input type="number" step="1" value={pointsValue} onChange={(e) => setPointsValue(e.target.value)} autoFocus
+                className="mt-1 h-10 w-full rounded-lg border border-slate-300 px-3 text-sm" />
+            </label>
+            {pointsMode === 'adjust' && (
+              <label className="mt-3 block">
+                <span className="text-xs font-semibold text-slate-600">Reason</span>
+                <input value={pointsReason} onChange={(e) => setPointsReason(e.target.value)}
+                  className="mt-1 h-10 w-full rounded-lg border border-slate-300 px-3 text-sm" />
+              </label>
+            )}
+            <div className="mt-4 flex justify-end gap-2">
+              <button type="button" onClick={() => setPointsTarget(null)} className="h-9 rounded-lg border border-slate-300 px-3 text-sm font-semibold text-slate-700">Cancel</button>
+              <button className="h-9 rounded-lg bg-emerald-600 px-4 text-sm font-semibold text-white">Confirm</button>
+            </div>
+          </form>
+        </div>
+      )}
+
       {/* Reports */}
       {activeSection === 'Reports' && (
         <div className="space-y-4">
+          <div className="flex flex-wrap gap-1 bg-slate-200/60 rounded-lg p-1 w-fit">
+            {REPORT_CATEGORIES.map(({ key, label }) => (
+              <button key={key} type="button"
+                onClick={() => { setReportCategory(key); setActiveReport(REPORT_CATEGORY_TABS[key][0].key) }}
+                className={`px-3 py-1.5 rounded-md text-xs font-bold transition-colors ${reportCategory === key ? 'bg-slate-900 text-white' : 'text-slate-600 hover:text-slate-900'}`}
+              >{label}</button>
+            ))}
+          </div>
           <div className="flex flex-wrap items-center gap-3">
-            <div className="flex gap-1 bg-slate-100 rounded-lg p-1">
-              {[{ key: 'cashier', label: 'Cashier Performance' }, { key: 'product', label: 'Product Sales' }, { key: 'hourly', label: 'Hourly Heatmap' }].map(({ key, label }) => (
+            <div className="flex flex-wrap gap-1 bg-slate-100 rounded-lg p-1">
+              {REPORT_CATEGORY_TABS[reportCategory].map(({ key, label }) => (
                 <button key={key} type="button" onClick={() => setActiveReport(key)} className={`px-3 py-1.5 rounded-md text-xs font-semibold transition-colors ${activeReport === key ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-600 hover:text-slate-900'}`}>{label}</button>
               ))}
             </div>
-            <FilterSelect label="Period" value={reportPeriod} onChange={setReportPeriod} options={[{ value: 'today', label: 'Today' }, { value: 'yesterday', label: 'Yesterday' }, { value: '7days', label: 'Last 7 Days' }, { value: '30days', label: 'Last 30 Days' }, { value: 'week', label: 'This Week' }, { value: 'month', label: 'This Month' }, { value: 'all', label: 'All Time' }, { value: 'custom', label: 'Custom' }]} />
+            {activeReport !== 'customer-registration' && activeReport !== 'customer-purchase-history' && (
+              <FilterSelect label="Period" value={reportPeriod} onChange={setReportPeriod} options={[{ value: 'today', label: 'Today' }, { value: 'yesterday', label: 'Yesterday' }, { value: '7days', label: 'Last 7 Days' }, { value: '30days', label: 'Last 30 Days' }, { value: 'week', label: 'This Week' }, { value: 'month', label: 'This Month' }, { value: 'all', label: 'All Time' }, { value: 'custom', label: 'Custom' }]} />
+            )}
             {reportPeriod === 'custom' && (
               <div className="flex items-center gap-1.5 flex-wrap">
                 <input type="date" value={reportDateFrom} max={reportDateTo || isoDate(new Date())}
@@ -1019,10 +1380,75 @@ const SalesControl = ({ initialSection = 'Transactions' }) => {
                   className="h-8 rounded-lg border border-slate-300 bg-white px-2 text-xs text-slate-700 focus:outline-none focus:ring-1 focus:ring-slate-400" />
               </div>
             )}
-            <button type="button" onClick={loadReports} disabled={reportLoading} className="inline-flex items-center gap-2 px-3 py-2 bg-slate-900 text-white rounded-lg text-sm hover:bg-slate-800 disabled:opacity-60">{reportLoading ? <Spinner size="sm" color="white" /> : <FaSearch />}Run Report</button>
+            <button type="button"
+              onClick={() => (reportCategory === 'sales' ? loadReports() : reportCategory === 'customer' && activeReport === 'customer-purchase-history' ? reloadCustomers() : loadCreditLoyaltyReport())}
+              disabled={reportLoading || clReportLoading}
+              className="inline-flex items-center gap-2 px-3 py-2 bg-slate-900 text-white rounded-lg text-sm hover:bg-slate-800 disabled:opacity-60"
+            >{(reportLoading || clReportLoading) ? <Spinner size="sm" color="white" /> : <FaSearch />}Run Report</button>
           </div>
 
-          {activeReport === 'cashier' && (
+          {reportCategory === 'credit' && (
+            <Panel title={REPORT_CATEGORY_TABS.credit.find((t) => t.key === activeReport)?.label} icon={FaMoneyBillWave} loading={clReportLoading}>
+              {clReportLoading ? <SkeletonTable rows={6} cols={5} /> : (
+                <CreditLoyaltyReportTable reportKey={activeReport} rows={clReportData} money={money} />
+              )}
+            </Panel>
+          )}
+
+          {reportCategory === 'loyalty' && (
+            <Panel title={REPORT_CATEGORY_TABS.loyalty.find((t) => t.key === activeReport)?.label} icon={FaTags} loading={clReportLoading}>
+              {clReportLoading ? <SkeletonTable rows={6} cols={4} /> : (
+                <CreditLoyaltyReportTable reportKey={activeReport} rows={clReportData} money={money} />
+              )}
+            </Panel>
+          )}
+
+          {reportCategory === 'customer' && activeReport === 'customer-purchase-history' && (
+            <Panel title="Customer Purchase History" icon={FaSearch} loading={customersLoading}>
+              {customersLoading ? <SkeletonTable rows={6} cols={3} /> : (
+                <>
+                  <DenseTable
+                    columns={['Name', 'Phone', 'Action']}
+                    rows={customersRows.map((c) => [c.name, c.phone || '—', <button key={`hist-${c.id}`} type="button" onClick={() => openHistory(c)} className="rounded-lg border border-slate-300 px-2.5 py-1 text-xs font-semibold text-slate-700 hover:bg-slate-50">View history</button>])}
+                    rowData={customersRows}
+                  />
+                  {!customersRows.length && <EmptyState text="No customers found." />}
+                </>
+              )}
+            </Panel>
+          )}
+
+          {reportCategory === 'customer' && activeReport === 'customer-sales-summary' && (
+            <Panel title="Customer Sales Summary" icon={FaSearch} loading={clReportLoading}>
+              {clReportLoading ? <SkeletonTable rows={6} cols={5} /> : (
+                <>
+                  <DenseTable
+                    columns={['Customer', 'Total Spent', 'Last Purchase', 'Credit Sales', 'Receipts']}
+                    rows={clReportData.map((c) => [c.customer_name, money(c.total_spent), c.last_purchase ? new Date(c.last_purchase).toLocaleString() : '—', money(c.credit_sales || 0), c.receipt_count?.toLocaleString() || '0'])}
+                    rowData={clReportData} numericColumns={[1, 3, 4]}
+                  />
+                  {!clReportData.length && <EmptyState text="No customer sales found for this period." />}
+                </>
+              )}
+            </Panel>
+          )}
+
+          {reportCategory === 'customer' && activeReport === 'customer-registration' && (
+            <Panel title="Customer Registration Report" icon={FaSearch} loading={clReportLoading}>
+              {clReportLoading ? <SkeletonTable rows={6} cols={5} /> : (
+                <>
+                  <DenseTable
+                    columns={['Name', 'Phone', 'Email', 'Registered', 'Status']}
+                    rows={clReportData.map((c) => [c.name, c.phone || '—', c.email || '—', new Date(c.created_at).toLocaleDateString(), c.is_active ? 'Active' : 'Suspended'])}
+                    rowData={clReportData}
+                  />
+                  {!clReportData.length && <EmptyState text="No customers registered yet." />}
+                </>
+              )}
+            </Panel>
+          )}
+
+          {reportCategory === 'sales' && activeReport === 'cashier' && (
             <Panel title="Cashier Performance" icon={FaCashRegister} loading={reportLoading}>
               {reportLoading ? <SkeletonTable rows={8} cols={8} /> : (
                 <>

@@ -2,7 +2,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import {
   FaBan, FaBars, FaBell, FaCalendarAlt, FaCashRegister, FaChartLine, FaCheck, FaChevronLeft,
-  FaChevronRight, FaCreditCard, FaExclamationCircle, FaExclamationTriangle,
+  FaChevronRight, FaCreditCard, FaExclamationCircle, FaExclamationTriangle, FaGift,
   FaList, FaLock, FaMinus, FaEdit, FaMobileAlt, FaMoneyBillWave, FaPause, FaPlus, FaPrint,
   FaReceipt, FaSearch, FaShoppingBag, FaSignOutAlt, FaSms, FaStore, FaTag, FaTimes, FaTrash, FaUser, FaWhatsapp
 } from 'react-icons/fa'
@@ -103,7 +103,7 @@ const productCardSizes = {
 
 const PosTerminal = () => {
   const navigate = useNavigate()
-  const { user, can, logout, branch: authBranch, company: authCompany, reloadSignal } = useAuth()
+  const { user, can, logout, branch: authBranch, company: authCompany, reloadSignal, isBranchAdmin } = useAuth()
   const { effectivelyOnline, refreshPendingCount, syncCatalog } = useOfflineStatus(authBranch?.id)
   const [usingCachedData, setUsingCachedData] = useState(false)
   const [apiProducts, setApiProducts] = useState([])
@@ -144,6 +144,9 @@ const PosTerminal = () => {
   const [mobilePanel, setMobilePanel] = useState(null)
   const [paymentModalOpen, setPaymentModalOpen] = useState(false)
   const [receiptModal, setReceiptModal] = useState(null)
+  const [saleConfirmation, setSaleConfirmation] = useState(null)
+  const [addLoyaltyModal, setAddLoyaltyModal] = useState(null)
+  const [creditLimitOverridable, setCreditLimitOverridable] = useState(false)
   const [editingHeldOrderId, setEditingHeldOrderId] = useState(null)
   const [heldOrderBaseline, setHeldOrderBaseline] = useState({})
 
@@ -278,6 +281,7 @@ const PosTerminal = () => {
         category: categoryName,
         sku: product.sku,
         price: Number(mode === 'Wholesale' ? product.wholesale_price : product.retail_price),
+        taxRate: Number(product.tax_rate || 0),
         stock: Number(product.stock || 0),
         letter: categoryName[0] || 'P',
         color,
@@ -329,7 +333,13 @@ const PosTerminal = () => {
   }, [cart, activeDiscountRules])
 
   const discountTotal = useMemo(() => cartWithDiscounts.reduce((s, i) => s + i.discountAmount, 0), [cartWithDiscounts])
-  const total = Math.max(0, subtotal - discountTotal)
+  const taxTotal = useMemo(() => cartWithDiscounts.reduce((sum, item) => {
+    const gross = item.price * item.qty
+    const taxable = Math.max(0, gross - (item.discountAmount || 0))
+    const itemTax = Math.round((taxable * (item.taxRate || 0)) / 100 * 100) / 100
+    return sum + itemTax
+  }, 0), [cartWithDiscounts])
+  const total = Math.max(0, subtotal - discountTotal + taxTotal)
   const lowStockCount = lowStockRows.length
 
   // Poll active discount rules every 30 s so expiries apply without a manual refresh.
@@ -441,6 +451,7 @@ const PosTerminal = () => {
     setCart([])
     setEditingHeldOrderId(null)
     setHeldOrderBaseline({})
+    setCustomer(fallbackCustomers[0])
   }
 
   const mapHeldItemsToCart = (heldItems = []) => heldItems.map((item, index) => {
@@ -481,6 +492,7 @@ const PosTerminal = () => {
     setMpesaReference('')
     setMpesaDirectTransactionId('')
     setPaymentMode('cash')
+    setCreditLimitOverridable(false)
   }
 
   const openPaymentModal = () => {
@@ -540,7 +552,7 @@ const PosTerminal = () => {
     }
     if (!cart.length || !branch || !register || !user) return
     if (paymentMode === 'credit' && !selectedCustomer?.id) {
-      setStatusMessage('Select a customer before checking out on credit.')
+      setStatusMessage('Verify a registered customer phone number before checking out on credit.')
       return
     }
 
@@ -572,6 +584,7 @@ const PosTerminal = () => {
       mpesa_direct_transaction_id: opts.mpesa_direct_transaction_id || '',
       mpesa_manual_approval: opts.mpesa_manual_approval || false,
       device_id: deviceId,
+      override_credit_limit: opts.override_credit_limit || false,
     }
 
     // Save offline when server is unreachable (cash sales, or manually-confirmed M-Pesa)
@@ -631,7 +644,22 @@ const PosTerminal = () => {
       return
     }
 
-    const sale = await withBusy(() => posApi.checkout(checkoutPayload), `Sale ${built.payments[0]?.method === 'cash' ? 'completed' : 'recorded'} successfully.`)
+    setCreditLimitOverridable(false)
+    let sale = null
+    setBusy(true)
+    setStatusMessage('')
+    try {
+      sale = await posApi.checkout(checkoutPayload)
+      setStatusMessage(`Sale ${built.payments[0]?.method === 'cash' ? 'completed' : 'recorded'} successfully.`)
+    } catch (error) {
+      const detail = error.data?.customer || error.data?.detail || (error.data ? JSON.stringify(error.data) : error.message)
+      setStatusMessage(detail)
+      if (paymentMode === 'credit' && typeof detail === 'string' && detail.includes('exceeded the available credit limit') && isBranchAdmin) {
+        setCreditLimitOverridable(true)
+      }
+    } finally {
+      setBusy(false)
+    }
     if (sale) {
       const discountByProduct = Object.fromEntries(
         cartWithDiscounts.filter((i) => i.discountAmount > 0).map((i) => [String(i.productId || i.id), { discountAmount: i.discountAmount, appliedRule: i.appliedRule || '' }])
@@ -665,36 +693,41 @@ const PosTerminal = () => {
       })
       // Capture before clearCart() resets the state
       const heldIdToCancel = editingHeldOrderId
+      const confirmedCustomer = selectedCustomer
       clearCart()
       resetPaymentInputs()
       setPaymentModalOpen(false)
-      setWorkspace('receipts')
-      setReceiptModal({
-        id: sale.receipt_no,
-        saleId: sale.id,
-        customer: sale.customer_name || customer,
-        cashier: sale.cashier_name || user.username,
-        branch: sale.branch_name || branch?.name || '',
-        register: sale.register_code || register?.code || register?.name || '',
-        mode: sale.mode || mode.toLowerCase(),
-        method: sale.payments?.[0]?.method || built.payments[0]?.method || 'cash',
-        amount: Number(sale.total),
-        subtotal: Number(sale.subtotal || sale.total || 0),
-        tax: Number(sale.tax_total || 0),
-        discount: Number(sale.discount_total || 0),
-        paid: Number(sale.paid_total || 0),
-        change: Number(sale.change_due || 0),
-        payments: sale.payments || built.payments,
-        time: new Date(sale.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-        status: 'Paid',
-        items: (sale.items || []).map((item) => ({
-          productId: item.product,
-          name: item.product_name,
-          qty: item.quantity,
-          price: Number(item.unit_price),
-          discountAmount: Number(item.discount_amount || 0) || (discountByProduct[String(item.product)]?.discountAmount ?? 0),
-          appliedRule: discountByProduct[String(item.product)]?.appliedRule || '',
-        })),
+      setSaleConfirmation({
+        customerId: confirmedCustomer?.id || null,
+        customerPhone: confirmedCustomer?.phone || '',
+        receipt: {
+          id: sale.receipt_no,
+          saleId: sale.id,
+          customer: sale.customer_name || customer,
+          customerPhone: confirmedCustomer?.phone || '',
+          cashier: sale.cashier_name || user.username,
+          branch: sale.branch_name || branch?.name || '',
+          register: sale.register_code || register?.code || register?.name || '',
+          mode: sale.mode || mode.toLowerCase(),
+          method: sale.payments?.[0]?.method || built.payments[0]?.method || 'cash',
+          amount: Number(sale.total),
+          subtotal: Number(sale.subtotal || sale.total || 0),
+          tax: Number(sale.tax_total || 0),
+          discount: Number(sale.discount_total || 0),
+          paid: Number(sale.paid_total || 0),
+          change: Number(sale.change_due || 0),
+          payments: sale.payments || built.payments,
+          time: new Date(sale.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+          status: 'Paid',
+          items: (sale.items || []).map((item) => ({
+            productId: item.product,
+            name: item.product_name,
+            qty: item.quantity,
+            price: Number(item.unit_price),
+            discountAmount: Number(item.discount_amount || 0) || (discountByProduct[String(item.product)]?.discountAmount ?? 0),
+            appliedRule: discountByProduct[String(item.product)]?.appliedRule || '',
+          })),
+        },
       })
       // Cancel the held order BEFORE refreshing so the fetch returns the clean list
       if (heldIdToCancel) {
@@ -966,6 +999,7 @@ const PosTerminal = () => {
           cart={cartWithDiscounts}
           subtotal={subtotal}
           discount={discountTotal}
+          tax={taxTotal}
           total={total}
           itemCount={itemCount}
           changeQty={changeQty}
@@ -1024,6 +1058,33 @@ const PosTerminal = () => {
           apiCustomers={apiCustomers}
           customer={customer}
           setCustomer={setCustomer}
+          creditLimitOverridable={creditLimitOverridable}
+          onCreditCustomerFound={(found) => {
+            setApiCustomers((prev) => (prev.some((c) => c.id === found.id) ? prev.map((c) => (c.id === found.id ? found : c)) : [...prev, found]))
+            setCustomer(found.name)
+          }}
+        />
+      )}
+
+      {saleConfirmation && (
+        <SaleConfirmationModal
+          onPrintReceipt={() => {
+            setReceiptModal(saleConfirmation.receipt)
+            setSaleConfirmation(null)
+          }}
+          onAddLoyaltyPoints={() => {
+            setAddLoyaltyModal({ receipt: saleConfirmation.receipt, customerId: saleConfirmation.customerId, customerPhone: saleConfirmation.customerPhone })
+            setSaleConfirmation(null)
+          }}
+          onExpire={() => setSaleConfirmation(null)}
+        />
+      )}
+
+      {addLoyaltyModal && (
+        <AddLoyaltyPointsModal
+          context={addLoyaltyModal}
+          branch={branch}
+          onClose={(updatedReceipt) => { setReceiptModal(updatedReceipt || addLoyaltyModal.receipt); setAddLoyaltyModal(null) }}
         />
       )}
 
@@ -1076,6 +1137,7 @@ const PosTerminal = () => {
             cart={cart}
             subtotal={subtotal}
             discount={discountTotal}
+          tax={taxTotal}
             total={total}
             itemCount={itemCount}
             changeQty={changeQty}
@@ -1138,8 +1200,6 @@ const buildCheckoutPayments = ({ total, paymentMode, cashTendered, mpesaAmount, 
   } else if (paymentMode === 'mpesa_till') {
     const code = mpesaDirectTransactionId.trim().toUpperCase()
     payments.push({ method: 'mpesa', amount: formatWhole(total), reference: code || 'Direct till payment' })
-  } else if (paymentMode === 'card') {
-    payments.push({ method: 'card', amount: format(total), reference: mpesaReference.trim() || 'Card terminal' })
   } else if (paymentMode === 'credit') {
     payments.push({ method: 'credit', amount: format(total), reference: 'Credit sale' })
   } else if (paymentMode === 'split') {
@@ -1565,6 +1625,7 @@ const WorkspacePanel = ({
   cart,
   subtotal,
   discount,
+  tax,
   total,
   itemCount,
   changeQty,
@@ -1622,6 +1683,7 @@ const WorkspacePanel = ({
         cart={cart}
         subtotal={subtotal}
         discount={discount}
+        tax={tax}
         total={total}
         itemCount={itemCount}
         changeQty={changeQty}
@@ -1687,7 +1749,7 @@ const WorkspaceTabBar = ({ workspace, setWorkspace, itemCount, heldCount = 0 }) 
 )
 
 const CartView = ({
-  mode, cart, subtotal, discount, total, itemCount, changeQty, setItemPrice, clearCart, setWorkspace, onHold, onOpenPayment, editingHeldOrderId,
+  mode, cart, subtotal, discount, tax, total, itemCount, changeQty, setItemPrice, clearCart, setWorkspace, onHold, onOpenPayment, editingHeldOrderId,
 }) => (
     <div className="flex min-h-0 flex-1 flex-col">
       <div className="flex shrink-0 items-center justify-between border-b border-slate-100 px-3 py-2">
@@ -1732,7 +1794,7 @@ const CartView = ({
 
       {cart.length > 0 && (
         <div className="shrink-0 border-t border-slate-200/80 bg-white px-3 pt-3 pb-3 shadow-[0_-8px_32px_rgba(15,23,42,0.10)]">
-          {discount > 0 && (
+          {(discount > 0 || tax > 0) && (
             <div className="mb-1.5 flex items-center justify-between text-[10px] text-slate-500">
               <span>Subtotal</span>
               <span className="tabular-nums">{money(subtotal)}</span>
@@ -1742,6 +1804,12 @@ const CartView = ({
             <div className="mb-1.5 flex items-center justify-between text-[10px] font-semibold text-emerald-600">
               <span>Discount</span>
               <span className="tabular-nums">−{money(discount)}</span>
+            </div>
+          )}
+          {tax > 0 && (
+            <div className="mb-1.5 flex items-center justify-between text-[10px] text-slate-500">
+              <span>Tax</span>
+              <span className="tabular-nums">{money(tax)}</span>
             </div>
           )}
           <div className="mb-3 flex items-baseline justify-between">
@@ -1899,6 +1967,154 @@ const PosModal = ({ title, onClose, children, wide = false }) => (
   </div>
 )
 
+const SALE_CONFIRMATION_SECONDS = 15
+
+const SaleConfirmationModal = ({ onPrintReceipt, onAddLoyaltyPoints, onExpire }) => {
+  const [secondsLeft, setSecondsLeft] = useState(SALE_CONFIRMATION_SECONDS)
+
+  useEffect(() => {
+    if (secondsLeft <= 0) {
+      onExpire()
+      return
+    }
+    const timer = setTimeout(() => setSecondsLeft((s) => s - 1), 1000)
+    return () => clearTimeout(timer)
+  }, [secondsLeft, onExpire])
+
+  return (
+    <div className="fixed inset-0 z-[70] flex items-center justify-center bg-slate-950/55 backdrop-blur-sm p-4">
+      <div className="relative w-full max-w-sm rounded-2xl bg-white p-5 text-center shadow-2xl">
+        <button type="button" onClick={onExpire} aria-label="Close" className="pos-press absolute right-3 top-3 flex h-8 w-8 items-center justify-center rounded-lg bg-slate-100 text-slate-500 hover:bg-slate-200">
+          <FaTimes />
+        </button>
+        <div className="mx-auto flex h-14 w-14 items-center justify-center rounded-full bg-emerald-100 text-emerald-600">
+          <FaCheck className="text-2xl" />
+        </div>
+        <h2 className="mt-3 text-lg font-bold text-slate-900">Sale complete</h2>
+        <p className="mt-1 text-xs text-slate-500">This window closes automatically in {secondsLeft}s.</p>
+        <div className="mt-5 grid grid-cols-1 gap-2">
+          <button type="button" onClick={onPrintReceipt} className="pos-press flex h-12 items-center justify-center gap-2 rounded-xl bg-sky-600 text-sm font-bold text-white hover:bg-sky-700">
+            <FaPrint />
+            Print Receipt
+          </button>
+          <button type="button" onClick={onAddLoyaltyPoints} className="pos-press flex h-12 items-center justify-center gap-2 rounded-xl bg-emerald-600 text-sm font-bold text-white hover:bg-emerald-700">
+            <FaGift />
+            Add Loyalty Points
+          </button>
+          <button type="button" onClick={onExpire} className="pos-press flex h-10 items-center justify-center gap-2 rounded-xl border border-slate-200 text-xs font-semibold text-slate-600 hover:bg-slate-50">
+            Exit
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+const AddLoyaltyPointsModal = ({ context, branch, onClose }) => {
+  const [phone, setPhone] = useState(context.customerPhone || '')
+  const [step, setStep] = useState('phone')
+  const [customer, setCustomer] = useState(null)
+  const [error, setError] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [result, setResult] = useState(null)
+  const rate = Number(branch?.loyalty_points_rate || 100)
+  const previewPoints = Math.floor(Number(context.receipt.amount || 0) / rate)
+
+  const verifyPhone = async () => {
+    if (!phone.trim()) return
+    setBusy(true)
+    setError('')
+    try {
+      const found = await posApi.lookupCustomerByPhone(phone.trim())
+      setCustomer(found)
+      setStep('confirm')
+    } catch (err) {
+      setError(err.data?.detail || 'No registered customer found with this phone number. Please register them first.')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const confirmAward = async () => {
+    setBusy(true)
+    setError('')
+    try {
+      const response = await posApi.awardLoyaltyPoints(customer.id, context.receipt.amount, context.receipt.saleId)
+      setResult(response)
+      setStep('done')
+    } catch (err) {
+      setError(err.data?.sale_amount || err.data?.detail || 'Could not award loyalty points.')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const finish = () => {
+    if (!result) { onClose(); return }
+    onClose({
+      ...context.receipt,
+      customerPhone: customer?.phone || context.receipt.customerPhone,
+      loyaltyPointsEarned: result.points_earned,
+      loyaltyPointsBalance: result.loyalty_points,
+    })
+  }
+
+  return (
+    <PosModal title="Add Loyalty Points" onClose={() => onClose()}>
+      <div className="p-4 space-y-3">
+        {step === 'phone' && (
+          <>
+            <label className="block">
+              <span className="text-xs font-semibold text-slate-600">Customer's registered phone number</span>
+              <input
+                type="tel"
+                value={phone}
+                onChange={(event) => setPhone(event.target.value)}
+                placeholder="07XXXXXXXX"
+                className="mt-1.5 h-12 w-full rounded-xl border-0 bg-slate-50 px-4 text-sm font-semibold text-slate-900 ring-1 ring-slate-200 outline-none focus:bg-white focus:ring-2 focus:ring-emerald-500/40"
+              />
+            </label>
+            {error && <p className="rounded-lg bg-red-50 px-3 py-2 text-xs font-semibold text-red-700">{error}</p>}
+            <button type="button" onClick={verifyPhone} disabled={!phone.trim() || busy} className="pos-press flex h-12 w-full items-center justify-center gap-2 rounded-xl bg-slate-900 text-sm font-bold text-white disabled:opacity-50">
+              {busy ? <DotLoader color="white" /> : 'Verify customer'}
+            </button>
+          </>
+        )}
+
+        {step === 'confirm' && customer && (
+          <>
+            <div className="rounded-xl bg-emerald-50 p-3 ring-1 ring-emerald-100">
+              <p className="text-sm font-bold text-emerald-900">{customer.name}</p>
+              <p className="text-xs text-emerald-700">{customer.phone} · Current balance: {customer.loyalty_points} pts</p>
+            </div>
+            <p className="text-sm text-slate-700">
+              This sale ({money(context.receipt.amount)}) will earn <span className="font-bold">{previewPoints} points</span> at the current rate.
+            </p>
+            {error && <p className="rounded-lg bg-red-50 px-3 py-2 text-xs font-semibold text-red-700">{error}</p>}
+            <button type="button" onClick={confirmAward} disabled={busy} className="pos-press flex h-12 w-full items-center justify-center gap-2 rounded-xl bg-emerald-600 text-sm font-bold text-white disabled:opacity-50">
+              {busy ? <DotLoader color="white" /> : 'Add points'}
+            </button>
+          </>
+        )}
+
+        {step === 'done' && result && (
+          <>
+            <div className="rounded-xl bg-emerald-50 p-4 text-center ring-1 ring-emerald-100">
+              <FaGift className="mx-auto text-2xl text-emerald-600" />
+              <p className="mt-2 text-sm font-semibold text-emerald-900">+{result.points_earned} points earned</p>
+              <p className="mt-1 text-xs text-emerald-700">New balance: {result.loyalty_points} points</p>
+            </div>
+            <button type="button" onClick={finish} className="pos-press flex h-12 w-full items-center justify-center gap-2 rounded-xl bg-sky-600 text-sm font-bold text-white hover:bg-sky-700">
+              <FaPrint />
+              Print Receipt
+            </button>
+          </>
+        )}
+      </div>
+    </PosModal>
+  )
+}
+
 const PaymentModal = ({
   total,
   itemCount,
@@ -1926,6 +2142,8 @@ const PaymentModal = ({
   apiCustomers = [],
   customer,
   setCustomer,
+  creditLimitOverridable = false,
+  onCreditCustomerFound,
 }) => (
   <PosModal title="Payment" onClose={onClose} wide>
     <div className="p-3 sm:p-4">
@@ -1960,6 +2178,8 @@ const PaymentModal = ({
         apiCustomers={apiCustomers}
         customer={customer}
         setCustomer={setCustomer}
+        creditLimitOverridable={creditLimitOverridable}
+        onCreditCustomerFound={onCreditCustomerFound}
       />
     </div>
   </PosModal>
@@ -1991,8 +2211,25 @@ const PaymentCheckout = ({
   apiCustomers = [],
   customer,
   setCustomer,
+  creditLimitOverridable = false,
+  onCreditCustomerFound,
 }) => {
   const [stkState, setStkState] = useState({ status: 'idle', checkoutRequestId: '', message: '' })
+  const [creditPhone, setCreditPhone] = useState('')
+  const [creditLookup, setCreditLookup] = useState({ status: 'idle', message: '' })
+
+  const verifyCreditCustomer = async () => {
+    const phone = creditPhone.trim()
+    if (!phone) return
+    setCreditLookup({ status: 'loading', message: '' })
+    try {
+      const found = await posApi.lookupCustomerByPhone(phone)
+      onCreditCustomerFound?.(found)
+      setCreditLookup({ status: 'found', message: '' })
+    } catch (error) {
+      setCreditLookup({ status: 'error', message: error.data?.detail || 'No registered customer found with this phone number. Please register them first.' })
+    }
+  }
   const [stkCountdown, setStkCountdown] = useState(null)
   const [stkRetrying, setStkRetrying] = useState(false)
   const [autoCompletingSale, setAutoCompletingSale] = useState(false)
@@ -2023,7 +2260,6 @@ const PaymentCheckout = ({
     { key: 'cash', label: 'Cash', icon: FaMoneyBillWave },
     { key: 'mpesa', label: 'M-Pesa', icon: FaMobileAlt },
     { key: 'mpesa_till', label: 'Till', icon: FaMobileAlt },
-    { key: 'card', label: 'Card', icon: FaCreditCard },
     { key: 'split', label: 'Split', icon: FaList },
     ...(branch?.credit_sale_enabled ? [{ key: 'credit', label: 'Credit', icon: FaUser }] : []),
   ]
@@ -2395,45 +2631,63 @@ const PaymentCheckout = ({
           </div>
         )}
 
-        {paymentMode === 'card' && (
-          <div className="space-y-3">
-            <label className="block">
-              <span className={labelClass}>Reference (optional)</span>
-              <input value={mpesaReference} onChange={(e) => setMpesaReference(e.target.value)} placeholder="Auth / last 4 digits" className={inputClass} />
-            </label>
-            <p className="text-xs text-slate-500">Charge <span className="font-bold text-slate-800">{money(total)}</span></p>
-          </div>
-        )}
-
         {paymentMode === 'credit' && (
           <div className="space-y-3">
             <label className="block">
-              <span className={labelClass}>Customer</span>
-              <select
-                value={customer}
-                onChange={(event) => setCustomer(event.target.value)}
-                className="mt-1.5 h-12 w-full rounded-xl border-0 bg-slate-50 px-4 text-sm font-semibold text-slate-900 ring-1 ring-slate-200 outline-none focus:bg-white focus:ring-2 focus:ring-emerald-500/40"
-              >
-                <option value="Walk-in Customer">Select a customer…</option>
-                {apiCustomers.map((item) => <option key={item.id} value={item.name}>{item.name}</option>)}
-              </select>
+              <span className={labelClass}>Customer's registered phone number</span>
+              <div className="mt-1.5 flex gap-2">
+                <input
+                  type="tel"
+                  value={creditPhone}
+                  onChange={(event) => { setCreditPhone(event.target.value); setCreditLookup({ status: 'idle', message: '' }) }}
+                  placeholder="07XXXXXXXX"
+                  className="h-12 flex-1 rounded-xl border-0 bg-slate-50 px-4 text-sm font-semibold text-slate-900 ring-1 ring-slate-200 outline-none focus:bg-white focus:ring-2 focus:ring-emerald-500/40"
+                />
+                <button
+                  type="button"
+                  onClick={verifyCreditCustomer}
+                  disabled={!creditPhone.trim() || creditLookup.status === 'loading'}
+                  className="pos-press h-12 shrink-0 rounded-xl bg-slate-900 px-4 text-sm font-bold text-white disabled:opacity-50"
+                >
+                  {creditLookup.status === 'loading' ? <DotLoader color="white" /> : 'Verify'}
+                </button>
+              </div>
             </label>
+            {creditLookup.status === 'error' && (
+              <p className="rounded-lg bg-red-50 px-3 py-2 text-xs font-semibold text-red-700 ring-1 ring-red-100">{creditLookup.message}</p>
+            )}
             {(() => {
               const picked = apiCustomers.find((item) => item.name === customer)
-              if (!picked) return null
+              if (!hasCustomer || !picked) return null
               return (
-                <p className="text-xs text-slate-500">
-                  Limit {money(picked.credit_limit)} · Owing {money(picked.credit_balance)} · Available {money(Math.max(0, picked.credit_limit - picked.credit_balance))}
-                </p>
+                <div className="rounded-lg bg-emerald-50 px-3 py-2 ring-1 ring-emerald-100">
+                  <p className="text-sm font-bold text-emerald-900">{picked.name}</p>
+                  <p className="text-xs text-emerald-700">
+                    Limit {money(picked.credit_limit)} · Owing {money(picked.credit_balance)} · Available {money(Math.max(0, picked.credit_limit - picked.credit_balance))}
+                  </p>
+                </div>
               )
             })()}
             <p className="text-xs text-slate-500">
-              {money(total)} will be added to the selected customer's account balance, checked against their credit limit.
+              {money(total)} will be added to the verified customer's account balance, checked against their credit limit.
             </p>
             {!hasCustomer && (
               <p className="rounded-lg bg-amber-50 px-3 py-2 text-xs font-semibold text-amber-800 ring-1 ring-amber-100">
-                Select a customer above before completing a credit sale.
+                Verify a registered customer's phone number above before completing a credit sale.
               </p>
+            )}
+            {creditLimitOverridable && (
+              <div className="rounded-lg bg-amber-50 px-3 py-2 ring-1 ring-amber-200">
+                <p className="text-xs font-semibold text-amber-800">Customer has exceeded the available credit limit.</p>
+                <button
+                  type="button"
+                  onClick={() => onCheckout({ override_credit_limit: true })}
+                  disabled={busy}
+                  className="pos-press mt-2 h-9 w-full rounded-lg bg-amber-600 text-xs font-bold text-white hover:bg-amber-700 disabled:opacity-50"
+                >
+                  Override limit and complete sale
+                </button>
+              </div>
             )}
           </div>
         )}
@@ -2470,7 +2724,7 @@ const PaymentCheckout = ({
         </p>
       )}
 
-      <div className="mt-4">
+      <div className="sticky bottom-0 z-10 mt-4 border-t border-slate-100 bg-white pt-3 pb-1 -mx-3 px-3 sm:-mx-4 sm:px-4">
         {mpesaRequired && (
           <div className={`mb-3 rounded-2xl border p-3 ${stkIsPaid ? 'border-emerald-200 bg-emerald-50' : stkState.status === 'failed' || stkState.status === 'timeout' ? 'border-amber-200 bg-amber-50' : 'border-sky-200 bg-sky-50'}`}>
             <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
@@ -2823,9 +3077,10 @@ const EnhancedReceiptModal = ({ receipt, onClose, onVoid, onVoidLine, onReprint,
         <section class="center"><div class="brand">${escapeHtml(receipt.branch || 'Nexa POS')}</div><div class="muted">${escapeHtml(receipt.register ? `Register ${receipt.register}` : 'Point of Sale')}</div>${voided ? '<div class="voided">VOIDED</div>' : ''}</section>
         <section class="meta">
           <div class="row"><span>Receipt</span><strong>${escapeHtml(receipt.id)}</strong></div>
-          <div class="row"><span>Time</span><strong>${escapeHtml(receipt.time)}</strong></div>
+          <div class="row"><span>Date &amp; Time</span><strong>${escapeHtml(receipt.time)}</strong></div>
           <div class="row"><span>Cashier</span><strong>${escapeHtml(receipt.cashier)}</strong></div>
           <div class="row"><span>Customer</span><strong>${escapeHtml(receipt.customer)}</strong></div>
+          ${receipt.customerPhone ? `<div class="row"><span>Phone</span><strong>${escapeHtml(receipt.customerPhone)}</strong></div>` : ''}
           <div class="row"><span>Mode</span><strong>${escapeHtml(receipt.mode || 'retail')}</strong></div>
         </section>
         <table>${rows}</table>
@@ -2836,6 +3091,8 @@ const EnhancedReceiptModal = ({ receipt, onClose, onVoid, onVoidLine, onReprint,
           <div class="row grand"><span>Total KSh</span><strong>${receiptMoney(receipt.amount)}</strong></div>
           ${paymentRows}
           <div class="row"><span>Change</span><strong>${receiptMoney(receipt.change || 0)}</strong></div>
+          ${receipt.loyaltyPointsEarned != null ? `<div class="row"><span>Loyalty Points Earned</span><strong>+${receipt.loyaltyPointsEarned}</strong></div>` : ''}
+          ${receipt.loyaltyPointsBalance != null ? `<div class="row"><span>Loyalty Points Balance</span><strong>${receipt.loyaltyPointsBalance}</strong></div>` : ''}
         </section>
         <p class="center thanks">Thank you for shopping with us.<br>Goods sold are subject to store return policy.</p>
       </main><script>window.onload=function(){window.print()}</script></body></html>`
@@ -2862,7 +3119,10 @@ const EnhancedReceiptModal = ({ receipt, onClose, onVoid, onVoidLine, onReprint,
             <SummaryRow label="Time" value={receipt.time} />
             <SummaryRow label="Cashier" value={receipt.cashier} />
             <SummaryRow label="Customer" value={receipt.customer} />
+            {receipt.customerPhone && <SummaryRow label="Phone" value={receipt.customerPhone} />}
             <SummaryRow label="Mode" value={String(receipt.mode || 'retail').toUpperCase()} />
+            {receipt.loyaltyPointsEarned != null && <SummaryRow label="Loyalty Points Earned" value={`+${receipt.loyaltyPointsEarned}`} />}
+            {receipt.loyaltyPointsBalance != null && <SummaryRow label="Loyalty Points Balance" value={String(receipt.loyaltyPointsBalance)} />}
           </div>
           <ul className="mt-3 divide-y divide-slate-100">
             {receipt.items.map((item) => (
@@ -2927,21 +3187,23 @@ const EnhancedReceiptModal = ({ receipt, onClose, onVoid, onVoidLine, onReprint,
             </div>
           </div>
         )}
-        <div className="mx-auto mt-4 grid max-w-sm grid-cols-2 gap-2">
-          <button type="button" onClick={printReceipt} className="pos-press col-span-2 flex h-11 items-center justify-center gap-2 rounded-xl bg-sky-600 text-sm font-semibold text-white hover:bg-sky-700">
-            <FaPrint />
-            Print receipt
-          </button>
-          <button type="button" onClick={() => onReprint?.(receipt)} disabled={busy} className="pos-press flex h-10 items-center justify-center gap-1 rounded-xl bg-white text-xs font-semibold text-slate-700 ring-1 ring-slate-200 hover:bg-slate-50 disabled:opacity-50">
-            <FaReceipt />
-            Reprint log
-          </button>
-          {!voided && canVoid && (
-            <button type="button" disabled={busy} onClick={() => onVoid?.(receipt)} className="pos-press flex h-10 items-center justify-center gap-1 rounded-xl bg-red-600 text-xs font-semibold text-white hover:bg-red-700 disabled:opacity-50">
-              <FaBan />
-              Void all
+        <div className="sticky bottom-0 z-10 -mx-3 mt-4 border-t border-slate-200 bg-slate-100 px-3 pb-1 pt-3 sm:-mx-4 sm:px-4">
+          <div className="mx-auto grid max-w-sm grid-cols-2 gap-2">
+            <button type="button" onClick={printReceipt} className="pos-press col-span-2 flex h-11 items-center justify-center gap-2 rounded-xl bg-sky-600 text-sm font-semibold text-white hover:bg-sky-700">
+              <FaPrint />
+              Print receipt
             </button>
-          )}
+            <button type="button" onClick={() => onReprint?.(receipt)} disabled={busy} className="pos-press flex h-10 items-center justify-center gap-1 rounded-xl bg-white text-xs font-semibold text-slate-700 ring-1 ring-slate-200 hover:bg-slate-50 disabled:opacity-50">
+              <FaReceipt />
+              Reprint log
+            </button>
+            {!voided && canVoid && (
+              <button type="button" disabled={busy} onClick={() => onVoid?.(receipt)} className="pos-press flex h-10 items-center justify-center gap-1 rounded-xl bg-red-600 text-xs font-semibold text-white hover:bg-red-700 disabled:opacity-50">
+                <FaBan />
+                Void all
+              </button>
+            )}
+          </div>
         </div>
       </div>
     </PosModal>

@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useState } from 'react'
 import {
   FaBell, FaBuilding, FaCashRegister, FaCheck, FaCheckCircle, FaCloud, FaCog, FaCopy, FaDatabase, FaDownload,
-  FaEnvelope, FaExchangeAlt, FaEdit, FaExclamationTriangle, FaFileExcel, FaHdd, FaKey, FaLink, FaLock, FaMemory,
+  FaEnvelope, FaExchangeAlt, FaEdit, FaExclamationTriangle, FaFileExcel, FaGift, FaHdd, FaKey, FaLink, FaLock, FaMemory,
   FaMoneyBillWave, FaPaperPlane, FaPlus, FaSave, FaServer, FaShieldAlt,
   FaSync, FaTachometerAlt, FaTags, FaTimes, FaTimesCircle, FaTrash, FaUnlink, FaUsers, FaWarehouse, FaWifi
 } from 'react-icons/fa'
@@ -39,6 +39,10 @@ const adminSections = {
   'POS Operations': {
     icon: FaCashRegister,
     summary: 'Admin controls for discounts, refunds, credit sales, layby, barcode mode, and approval rules.',
+  },
+  'Credit & Loyalty': {
+    icon: FaGift,
+    summary: 'Company-wide credit limits, warning thresholds, due periods, and loyalty earning/redemption rules.',
   },
   'Stock Controls': {
     icon: FaWarehouse,
@@ -128,6 +132,7 @@ const Administration = ({ section = 'Business Setup' }) => {
       {section === 'Security' && <Security />}
       {section === 'System Settings' && <SystemSettings />}
       {section === 'POS Operations' && <Operations />}
+      {section === 'Credit & Loyalty' && <CreditLoyaltySettings />}
       {section === 'Stock Controls' && <StockControls />}
       {section === 'Audit Logs' && <AuditLogs />}
       {section === 'Notifications' && <Notifications />}
@@ -1781,6 +1786,39 @@ const Operations = () => {
         <Toggle label="Layby / installments" checked={draft.layby_enabled} disabled={!canEdit} onChange={(v) => setField('layby_enabled', v)} />
         <Toggle label="Barcode scanning mode" checked={draft.barcode_mode} disabled={!canEdit} onChange={(v) => setField('barcode_mode', v)} />
         <Field label="Max cashier discount %" type="number" value={draft.max_cashier_discount_pct ?? 5} onChange={canEdit ? (v) => setField('max_cashier_discount_pct', Number(v)) : undefined} />
+      </form>
+      <SettingsSaveBar onSave={save} saving={saving} canEdit={canEdit} message={message} />
+    </Panel>
+  )
+}
+
+const CreditLoyaltySettings = () => {
+  const { draft, setField, loading, saving, save, message, canEdit } = useSettingsSection('credit_loyalty')
+  if (loading) return <div className="p-4 text-sm text-slate-500">Loading credit &amp; loyalty settings...</div>
+  return (
+    <Panel title="Credit &amp; Loyalty Settings" icon={FaGift}>
+      <form onSubmit={save} className="p-4 space-y-5">
+        <div>
+          <h3 className="mb-2 text-sm font-bold text-slate-800">Credit Settings</h3>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <Field label="Default Customer Credit Limit" type="number" value={draft.default_customer_credit_limit ?? 0} onChange={canEdit ? (v) => setField('default_customer_credit_limit', Number(v)) : undefined} />
+            <Field label="Maximum Credit Limit Per Customer (0 = no cap)" type="number" value={draft.max_credit_limit_per_customer ?? 0} onChange={canEdit ? (v) => setField('max_credit_limit_per_customer', Number(v)) : undefined} />
+            <Field label="Credit Warning Percentage" type="number" value={draft.credit_warning_percentage ?? 80} onChange={canEdit ? (v) => setField('credit_warning_percentage', Number(v)) : undefined} />
+            <Field label="Credit Due Period (Days)" type="number" value={draft.credit_due_period_days ?? 30} onChange={canEdit ? (v) => setField('credit_due_period_days', Number(v)) : undefined} />
+            <Toggle label="Allow Credit Limit Override (Manager Authorization)" checked={draft.allow_credit_limit_override} disabled={!canEdit} onChange={(v) => setField('allow_credit_limit_override', v)} />
+          </div>
+        </div>
+        <div className="border-t border-slate-200 pt-4">
+          <h3 className="mb-2 text-sm font-bold text-slate-800">Loyalty Settings</h3>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <Field label="Minimum Purchase to Earn Points (KES)" type="number" value={draft.loyalty_minimum_purchase_amount ?? 0} onChange={canEdit ? (v) => setField('loyalty_minimum_purchase_amount', Number(v)) : undefined} />
+            <Field label="Loyalty Redemption Rate (KES per point)" type="number" value={draft.loyalty_redemption_rate ?? 1} onChange={canEdit ? (v) => setField('loyalty_redemption_rate', Number(v)) : undefined} />
+            <Field label="Minimum Points Required for Redemption" type="number" value={draft.loyalty_minimum_points_redemption ?? 100} onChange={canEdit ? (v) => setField('loyalty_minimum_points_redemption', Number(v)) : undefined} />
+            <Field label="Loyalty Points Expiry Period, Days (0 = never)" type="number" value={draft.loyalty_points_expiry_days ?? 0} onChange={canEdit ? (v) => setField('loyalty_points_expiry_days', Number(v)) : undefined} />
+            <Toggle label="Allow Manual Loyalty Point Adjustment (Manager Only)" checked={draft.loyalty_manual_adjustment_enabled} disabled={!canEdit} onChange={(v) => setField('loyalty_manual_adjustment_enabled', v)} />
+          </div>
+          <p className="mt-2 text-xs text-slate-500">The earn rate (points per KES spent) and the on/off switches for credit sales, loyalty, and WhatsApp/SMS receipts are set per branch under Administration → Branches.</p>
+        </div>
       </form>
       <SettingsSaveBar onSave={save} saving={saving} canEdit={canEdit} message={message} />
     </Panel>

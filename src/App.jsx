@@ -94,6 +94,7 @@ function App() {
         <Route path="/sales-control/discount-engine" element={<GuardedRoute path="/sales-control/discount-engine"><SalesControl initialSection="Discount Engine" /></GuardedRoute>} />
         <Route path="/sales-control/price-scheduler" element={<GuardedRoute path="/sales-control/price-scheduler"><SalesControl initialSection="Price Scheduler" /></GuardedRoute>} />
         <Route path="/sales-control/customer-sales" element={<GuardedRoute path="/sales-control/customer-sales"><SalesControl initialSection="Customer Sales" /></GuardedRoute>} />
+        <Route path="/sales-control/customers" element={<GuardedRoute path="/sales-control/customers"><SalesControl initialSection="Customers" /></GuardedRoute>} />
         <Route path="/sales-control/reports" element={<GuardedRoute path="/sales-control/reports"><SalesControl initialSection="Reports" /></GuardedRoute>} />
         <Route path="/sales-control/audit-logs" element={<GuardedRoute path="/sales-control/audit-logs"><SalesControl initialSection="Audit Logs" /></GuardedRoute>} />
         <Route path="/sales" element={<Navigate to="/sales-control/transactions" />} />
@@ -119,6 +120,7 @@ function App() {
         <Route path="/admin/branches" element={<AdminRoute path="/admin/branches" section="Branches" />} />
         <Route path="/admin/users" element={<AdminRoute path="/admin/users" section="Users" />} />
         <Route path="/admin/roles-permissions" element={<AdminRoute path="/admin/roles-permissions" section="Roles & Permissions" />} />
+        <Route path="/admin/credit-loyalty" element={<AdminRoute path="/admin/credit-loyalty" section="Credit & Loyalty" />} />
         <Route path="/admin/stock-controls" element={<AdminRoute path="/admin/stock-controls" section="Stock Controls" />} />
         <Route path="/admin/audit-logs" element={<AdminRoute path="/admin/audit-logs" section="Audit Logs" />} />
         <Route path="/admin/notifications" element={<AdminRoute path="/admin/notifications" section="Notifications" />} />
